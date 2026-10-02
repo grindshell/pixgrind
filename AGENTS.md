@@ -90,9 +90,6 @@ Follow-ups:
   - Autosave/crash recovery (e.g. IndexedDB).
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
-- Tools:
-  - Shape previews that react to Shift being pressed without moving the
-    pointer.
 - Selection:
   - A floating selection that keeps pixels moved off-canvas until it is
     committed (today they are dropped on release).
@@ -342,6 +339,10 @@ storage without updating this section and the palette-swap design.
 - Pointer Events (mouse, pen, touch), with pointer capture during gestures.
   `ui/canvasInput.ts` turns them into tool gestures in document pixel
   coordinates and only forwards a move when the pixel or Shift state changes.
+  Pressing or releasing Shift mid-gesture re-sends the last position with the
+  new Shift state, so line snapping, squares and axis-locked moves update
+  without moving the pointer. Tools must therefore handle a `move` to the same
+  pixel; all current ones simply recompute.
 - Tools live in `ui/tools.ts`, one `Tool` object each:
   - `begin(editor, input, index, slot)` returns a `ToolGesture` with
     `move`/`end`. `slot` is the pressed button's color (`primary` for the

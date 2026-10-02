@@ -95,6 +95,17 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
   canvas.addEventListener('pointercancel', endGesture);
   canvas.addEventListener('lostpointercapture', endGesture);
 
+  // Pressing or releasing Shift mid-gesture re-applies the shape constraint
+  // (45° lines, squares, axis-locked moves) without waiting for the pointer to move.
+  const onShift = (e: KeyboardEvent) => {
+    if (e.key !== 'Shift' || gesture?.kind !== 'tool' || gesture.last.shift === e.shiftKey) return;
+    const input = { ...gesture.last, shift: e.shiftKey };
+    gesture.gesture.move(input);
+    gesture.last = input;
+  };
+  window.addEventListener('keydown', onShift);
+  window.addEventListener('keyup', onShift);
+
   canvas.addEventListener('pointerleave', () => {
     // Keep the brush outline while a captured gesture continues off the canvas.
     if (!gesture) editor.setPointer(null);
