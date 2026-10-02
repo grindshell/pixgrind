@@ -48,10 +48,12 @@ Built so far:
     or press Enter to finish, Backspace undoes a corner, Escape cancels),
     or the magic wand (the clicked color on the active layer, touching
     pixels only or all of them). Ctrl+A selects all; Ctrl+D or Escape
-    deselects. A click without dragging deselects.
-  - Selection panel: a mode for the selection tools (new, add, subtract,
-    intersect) and the wand's Contiguous option. Shift adds, Ctrl/Cmd
-    subtracts and Ctrl+Shift intersects, whatever the mode.
+    deselects; Ctrl+I inverts (with nothing selected, it selects all). A
+    click without dragging deselects.
+  - Selection panel: All / None / Invert buttons, a mode for the selection
+    tools (new, add, subtract, intersect) and the wand's Contiguous option.
+    Shift adds, Ctrl/Cmd subtracts and Ctrl+Shift intersects, whatever the
+    mode.
   - Moving selected pixels (Move tool, or arrow keys with it: 1px, 10px
     with Shift) floats them.
     - Pixels moved off the canvas are kept, shown faintly outside it, until
@@ -117,8 +119,7 @@ Follow-ups:
 - Selection:
   - Whole-layer moves (nothing selected) don't float, so pixels moved off
     the canvas are still lost on release.
-  - Invert selection (Ctrl+Shift+I is taken by browser dev tools), and a
-    wand option to sample all visible layers.
+  - A wand option to sample all visible layers.
   - Shift to snap polygonal lasso edges to 45°, as the Line tool does.
   - Clipboard: paste into a new layer, copy merged (all visible layers), and
     on-screen buttons for touch devices (keyboard only today).
@@ -536,8 +537,14 @@ storage without updating this section and the palette-swap design.
   state at the start of the drag (`moveFloating` from the starting float).
   The drag is one history entry; dragging back to the start records nothing.
 - Keyboard selection actions live in `ui/commands.ts` (select all, deselect,
-  drop, clear, nudge) and use the core constructors in `core/selection.ts`.
-  Enter drops a float; Escape and Ctrl+D drop and deselect.
+  invert, drop, clear, nudge) and use the core constructors in
+  `core/selection.ts`. Enter drops a float; Escape and Ctrl+D drop and
+  deselect.
+  - Invert is Ctrl+I (as in GIMP), because Ctrl+Shift+I, the usual
+    shortcut elsewhere, opens dev tools in every major browser before the
+    page sees it. Ctrl+Shift+I is handled too, for when it gets through.
+  - `invertMask` complements within the document, so inverting nothing
+    selects everything and inverting everything deselects.
 
 ### Clipboard
 

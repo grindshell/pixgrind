@@ -7,14 +7,22 @@ import {
   type SelectionEdit,
 } from './edits.ts';
 import type { Layer } from './layer.ts';
-import { clipMask, maskHas, masksEqual, type Mask } from './mask.ts';
+import { clipMask, invertMask, maskHas, masksEqual, type Mask } from './mask.ts';
 import { TRANSPARENT } from './palette.ts';
-import { findLayer, inBounds, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
+import { documentRect, findLayer, inBounds, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
 import { translateRect, type Rect } from './rect.ts';
 
 /** Changes the selection. `after` is clipped to the document. Null when nothing changes. */
 export function selectionEdit(doc: PixelDocument, after: Mask | null, label: string): SelectionEdit | null {
   return selectionChange(doc.selection, after && clipMask(after, doc.width, doc.height), label);
+}
+
+/**
+ * Selects the unselected pixels of the document instead of the selected
+ * ones. With nothing selected that's everything; with everything, nothing.
+ */
+export function invertSelectionEdit(doc: PixelDocument, label = 'Invert selection'): SelectionEdit | null {
+  return selectionEdit(doc, invertMask(doc.selection, documentRect(doc)), label);
 }
 
 /** A selection edit between two known states (e.g. after a live preview). Null when they are equal. */

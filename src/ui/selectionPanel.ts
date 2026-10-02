@@ -1,5 +1,6 @@
 import type { SelectionMode } from '../core/mask.ts';
-import { checkbox, el, fieldRow, iconButton } from './dom.ts';
+import { deselect, invertSelection, selectAll } from './commands.ts';
+import { checkbox, el, fieldRow, iconButton, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
@@ -10,7 +11,11 @@ const MODES: ReadonlyArray<{ mode: SelectionMode; icon: IconName; label: string 
   { mode: 'intersect', icon: 'selectIntersect', label: 'Intersect with the selection (or hold Ctrl+Shift)' },
 ];
 
-/** Options for the selection tools: how they combine with the selection, and how the magic wand picks pixels. */
+/**
+ * Select all / none / invert (also on the keyboard, but this works on touch
+ * screens too), how the selection tools combine with the selection, and
+ * how the magic wand picks pixels.
+ */
 export function createSelectionPanel(editor: Editor): HTMLElement {
   const panel = el('section', 'panel');
   const header = el('div', 'panel-header');
@@ -28,6 +33,13 @@ export function createSelectionPanel(editor: Editor): HTMLElement {
   modes.append(...modeButtons.map(({ button }) => button));
   header.append(heading, modes);
 
+  const all = textButton('All', () => selectAll(editor));
+  all.title = 'Select all (Ctrl+A)';
+  const none = textButton('None', () => deselect(editor));
+  none.title = 'Deselect (Ctrl+D)';
+  const invert = textButton('Invert', () => invertSelection(editor));
+  invert.title = 'Select the unselected pixels instead (Ctrl+I)';
+
   const wandLabel = el('span', 'field-label');
   wandLabel.textContent = 'Magic wand';
   const contiguous = checkbox('Contiguous', (checked) => editor.setWandContiguous(checked));
@@ -37,10 +49,11 @@ export function createSelectionPanel(editor: Editor): HTMLElement {
   const render = () => {
     for (const { mode, button } of modeButtons) button.setAttribute('aria-pressed', String(mode === editor.selectionMode));
     contiguous.input.checked = editor.wandContiguous;
+    none.disabled = !editor.doc.selection && !editor.doc.floating;
   };
 
   editor.onChange(render);
   render();
-  panel.append(header, fieldRow(wandLabel, contiguous.label));
+  panel.append(header, fieldRow(all, none, invert), fieldRow(wandLabel, contiguous.label));
   return panel;
 }

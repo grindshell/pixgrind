@@ -188,6 +188,17 @@ export function combineMasks(selection: Mask | null, shape: Mask | null, mode: S
   }
 }
 
+/**
+ * The pixels of `area` (e.g. the whole document) that aren't in `mask`.
+ * Inverting nothing gives all of `area`; inverting all of it gives null.
+ */
+export function invertMask(mask: Mask | null, area: Rect): Mask | null {
+  if (!mask) return rectMask(area);
+  const bits = bitsIn(mask, area);
+  for (let i = 0; i < bits.length; i++) bits[i] ^= 1;
+  return maskFromBits(area, bits);
+}
+
 function merge(a: Mask, b: Mask, area: Rect, op: (a: number, b: number) => number): Mask | null {
   const bits = bitsIn(a, area);
   const other = bitsIn(b, area);

@@ -1,5 +1,5 @@
 import { stepBrushSize } from '../core/brush.ts';
-import { clearSelection, deselect, dropFloating, nudge, selectAll } from './commands.ts';
+import { clearSelection, deselect, dropFloating, invertSelection, nudge, selectAll } from './commands.ts';
 import { isTextEntry } from './dom.ts';
 import type { Editor } from './editor.ts';
 import { getTool, TOOLS } from './tools.ts';
@@ -43,6 +43,8 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       else if ((key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey)) editor.redo();
       else if (key === 'a' && !e.shiftKey) selectAll(editor);
       else if (key === 'd' && !e.shiftKey) deselect(editor);
+      // Ctrl+Shift+I, the usual elsewhere, opens browser dev tools; take it when it gets through.
+      else if (key === 'i') invertSelection(editor);
       else return;
       e.preventDefault();
       return;

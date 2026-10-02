@@ -9,6 +9,7 @@ import {
   clearSelectionEdit,
   deleteFloatingEdit,
   dropFloatingEdit,
+  invertSelectionEdit,
   liftSelection,
   movedPixels,
   moveFloating,
@@ -63,6 +64,25 @@ describe('selection edits', () => {
     expect(selectionChange(rectMask(pixel), rectMask({ ...pixel }), 'x')).toBeNull();
     const diagonal = (): Mask => ({ rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 0, 1) });
     expect(selectionChange(diagonal(), diagonal(), 'x')).toBeNull();
+  });
+});
+
+describe('invertSelectionEdit', () => {
+  it('selects the rest of the document, undoably', () => {
+    const doc = createDocument(3, 2, palette);
+    const history = new History();
+    doc.selection = rectMask({ x: 0, y: 0, width: 1, height: 2 });
+    perform(doc, history, invertSelectionEdit(doc));
+    expect(doc.selection).toEqual(rectMask({ x: 1, y: 0, width: 2, height: 2 }));
+    history.undo(doc);
+    expect(doc.selection).toEqual(rectMask({ x: 0, y: 0, width: 1, height: 2 }));
+  });
+
+  it('selects everything when nothing is selected, and deselects when everything is', () => {
+    const doc = createDocument(3, 2, palette);
+    expect(invertSelectionEdit(doc)?.after).toEqual(rectMask({ x: 0, y: 0, width: 3, height: 2 }));
+    doc.selection = rectMask({ x: 0, y: 0, width: 3, height: 2 });
+    expect(invertSelectionEdit(doc)?.after).toBeNull();
   });
 });
 

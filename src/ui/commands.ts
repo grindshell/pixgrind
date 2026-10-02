@@ -5,6 +5,7 @@ import {
   clearSelectionEdit,
   deleteFloatingEdit,
   dropFloatingEdit,
+  invertSelectionEdit,
   moveSelectionEdit,
   selectionEdit,
 } from '../core/selection.ts';
@@ -18,6 +19,11 @@ import type { Editor } from './editor.ts';
 
 export function selectAll(editor: Editor): void {
   editor.perform(selectionEdit(editor.doc, rectMask(documentRect(editor.doc)), 'Select all'));
+}
+
+/** Selects every unselected pixel instead, dropping a floating selection where it is. */
+export function invertSelection(editor: Editor): void {
+  editor.perform(invertSelectionEdit(editor.doc));
 }
 
 /** Deselects, dropping a floating selection where it is. */

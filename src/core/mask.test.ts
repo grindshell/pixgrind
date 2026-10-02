@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   clipMask,
   combineMasks,
+  invertMask,
   lassoMask,
   maskFromBits,
   maskFromOffsets,
@@ -111,6 +112,28 @@ describe('combineMasks', () => {
     expect(combineMasks(l, rectMask({ x: 1, y: 0, width: 1, height: 1 }), 'add')).toEqual(
       rectMask({ x: 0, y: 0, width: 2, height: 2 }),
     );
+  });
+});
+
+describe('invertMask', () => {
+  const area = { x: 0, y: 0, width: 4, height: 3 };
+
+  it('selects what is left of the area', () => {
+    expect(show(invertMask(maskFrom(['##', '#.'], 1, 1), area), area)).toEqual(['####', '#..#', '#.##']);
+    // A band across the top inverts to the rectangle below it, without bits.
+    expect(invertMask(rectMask({ x: 0, y: 0, width: 4, height: 1 }), area)).toEqual(
+      rectMask({ x: 0, y: 1, width: 4, height: 2 }),
+    );
+  });
+
+  it('turns nothing into everything and back', () => {
+    expect(invertMask(null, area)).toEqual(rectMask(area));
+    expect(invertMask(rectMask(area), area)).toBeNull();
+  });
+
+  it('is its own inverse', () => {
+    const mask = maskFrom(['#..#', '.##.'])!;
+    expect(invertMask(invertMask(mask, area), area)).toEqual(mask);
   });
 });
 
