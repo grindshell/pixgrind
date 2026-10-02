@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createLayer } from '../core/layer.ts';
+import { rectMask } from '../core/mask.ts';
 import { createPalette } from '../core/palette.ts';
 import { createDocument, setPixel, type PixelDocument } from '../core/pixelDocument.ts';
 import { MAX_REFERENCE_SCALE } from '../core/referencePlacement.ts';
@@ -23,7 +24,7 @@ function sampleDoc(): PixelDocument {
   top.opacity = 0.25;
   top.pixels[7] = 3;
   doc.layers.push(top);
-  doc.selection = { x: 1, y: 1, width: 2, height: 1 };
+  doc.selection = rectMask({ x: 1, y: 1, width: 2, height: 1 });
   return doc;
 }
 

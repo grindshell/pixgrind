@@ -12,10 +12,10 @@ import {
 } from '../core/edits.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
+import type { Mask, SelectionMode } from '../core/mask.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { findLayer, layerIndex, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
-import type { Rect } from '../core/rect.ts';
 import { CanvasRenderer, type BrushCursor } from '../render/canvasRenderer.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
@@ -29,6 +29,7 @@ import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryP
 import { createBrushPanel } from './brushPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
 import { createReferencePanel } from './referencePanel.ts';
+import { createSelectionPanel } from './selectionPanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
 import { createToolbar } from './toolbar.ts';
 import { getTool, type ToolId } from './tools.ts';
@@ -55,6 +56,10 @@ export class Editor {
   brush: Brush = { ...DEFAULT_BRUSH };
   /** Pixel-perfect freehand strokes: drop the corners of L-shaped turns. Only with a 1px brush. */
   pixelPerfect = false;
+  /** How selection tools combine with the selection, unless Shift/Ctrl say otherwise. Change via `setSelectionMode`. */
+  selectionMode: SelectionMode = 'replace';
+  /** The magic wand selects only touching pixels of the color; otherwise all of them on the layer. */
+  wandContiguous = true;
   /** Document pixel under the pointer, or null when it's off the canvas. Drives the brush outline. */
   pointer: Point | null = null;
   /** Tracing guide shown with the artwork; never part of the document. Change via `setReference`/`updateReference`. */
@@ -64,6 +69,8 @@ export class Editor {
   private activeIndexHint = 0;
   private stroke: PixelEditSession | null = null;
   private gestureActive = false;
+  /** Path of a lasso being drawn, shown until it's released. */
+  private lasso: readonly Point[] | null = null;
   /** Document size the viewport was last fitted to. */
   private fittedSize: { width: number; height: number };
   /** History position when the document was last saved or opened as a project. */
@@ -154,6 +161,18 @@ export class Editor {
   setPixelPerfect(on: boolean): void {
     if (this.pixelPerfect === on) return;
     this.pixelPerfect = on;
+    this.notify();
+  }
+
+  setSelectionMode(mode: SelectionMode): void {
+    if (this.selectionMode === mode) return;
+    this.selectionMode = mode;
+    this.notify();
+  }
+
+  setWandContiguous(on: boolean): void {
+    if (this.wandContiguous === on) return;
+    this.wandContiguous = on;
     this.notify();
   }
 
@@ -249,8 +268,14 @@ export class Editor {
    * Live selection preview (e.g. while dragging a marquee or a move). Not
    * recorded: follow up with `record(selectionChange(before, after, label))`.
    */
-  previewSelection(selection: Rect | null): void {
+  previewSelection(selection: Mask | null): void {
     this.doc.selection = selection;
+    this.requestRender();
+  }
+
+  /** Shows the path of a lasso being drawn (null to hide it). Not document state. */
+  previewLasso(points: readonly Point[] | null): void {
+    this.lasso = points;
     this.requestRender();
   }
 
@@ -332,7 +357,11 @@ export class Editor {
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
-      this.renderer.render(this.doc, this.viewport, { reference: this.reference, brush: this.brushCursor() });
+      this.renderer.render(this.doc, this.viewport, {
+        reference: this.reference,
+        brush: this.brushCursor(),
+        lasso: this.lasso,
+      });
     });
   }
 
@@ -398,6 +427,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
     createHistoryControls(editor),
     filePanel.element,
     createBrushPanel(editor),
+    createSelectionPanel(editor),
     createPalettePanel(editor),
     createPaletteLibraryPanel(editor, openPaletteLibrary()),
     createReferencePanel(editor),

@@ -4,6 +4,7 @@ import { applyEdit, documentState, type DocumentEdit } from './edits.ts';
 import { History } from './history.ts';
 import type { RgbaImage } from './image.ts';
 import { createLayer } from './layer.ts';
+import { rectMask } from './mask.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, MAX_DOCUMENT_SIZE, setPixel, type PixelDocument } from './pixelDocument.ts';
 
@@ -23,7 +24,7 @@ function existingDoc(): PixelDocument {
   const doc = createDocument(4, 4, palette, 'Old');
   setPixel(doc, doc.layers[0], 0, 0, 2);
   doc.layers.push(createLayer(4, 4, 'Top'));
-  doc.selection = { x: 1, y: 1, width: 2, height: 2 };
+  doc.selection = rectMask({ x: 1, y: 1, width: 2, height: 2 });
   return doc;
 }
 

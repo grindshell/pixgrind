@@ -1,12 +1,21 @@
 import { brushLine, brushMask, brushRect, type BrushMask } from '../core/brush.ts';
 import { visibleIndexAt } from '../core/composite.ts';
 import { combineEdits, type PixelEditSession } from '../core/edits.ts';
-import { floodRegion } from '../core/floodFill.ts';
+import { colorRegion, floodRegion } from '../core/floodFill.ts';
+import {
+  clipMask,
+  combineMasks,
+  lassoMask,
+  maskFromOffsets,
+  rectMask,
+  type Mask,
+  type SelectionMode,
+} from '../core/mask.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { pixelPerfectPath } from '../core/pixelPerfect.ts';
 import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
-import { clipRect, rectFromCorners, rectsEqual } from '../core/rect.ts';
+import { rectFromCorners, rectsEqual } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
 import { floatingChange, liftSelection, movedPixels, moveFloating, selectionChange } from '../core/selection.ts';
 import type { ColorSlot, Editor } from './editor.ts';
@@ -14,6 +23,8 @@ import type { IconName } from './icons.ts';
 
 export type ToolId =
   | 'select'
+  | 'lasso'
+  | 'wand'
   | 'move'
   | 'pencil'
   | 'eraser'
@@ -28,8 +39,10 @@ export type ToolId =
 export interface ToolInput extends Point {
   /** Exact (fractional) document coordinates, for tools that don't work in whole pixels. */
   exact: Point;
-  /** Constrains shapes: lines to 45° steps, rectangles to squares. */
+  /** Constrains shapes: lines to 45° steps, rectangles to squares. Selection tools: add to the selection. */
   shift: boolean;
+  /** Ctrl or Cmd. Selection tools: subtract from the selection (intersect with Shift). */
+  ctrl: boolean;
 }
 
 /** One press–drag–release on the canvas. */
@@ -211,9 +224,49 @@ const eyedropper: Tool = {
 };
 
 /**
- * Rectangle marquee. Dragging selects the spanned pixels (clipped to the
- * document); clicking without dragging deselects. Either drops a floating
- * selection where it is.
+ * A selection tool's gesture makes a shape that combines with the selection
+ * it started from, in a mode fixed at the press: Shift adds, Ctrl (Cmd)
+ * subtracts, both intersect, and otherwise the Selection panel's mode
+ * applies. Any floating selection is dropped where it is.
+ */
+interface Selecting {
+  mode: SelectionMode;
+  /** Shows the selection as it would be with `shape` (clipped to the document); null is an empty shape. */
+  preview(shape: Mask | null): void;
+  /** Records the change from the starting selection to the one shown, with the drop, as one undo step. */
+  commit(): void;
+}
+
+function selecting(editor: Editor, start: ToolInput): Selecting {
+  const { doc } = editor;
+  const before = doc.selection;
+  const floating = doc.floating;
+  const mode = modifierMode(start) ?? editor.selectionMode;
+  // Show the selection being made rather than the float's outline.
+  editor.previewFloating(null);
+  return {
+    mode,
+    preview(shape) {
+      editor.previewSelection(combineMasks(before, shape && clipMask(shape, doc.width, doc.height), mode));
+    },
+    commit() {
+      const after = doc.selection;
+      const label = after ? 'Select' : 'Deselect';
+      editor.record(combineEdits(label, [floatingChange(floating, null, label), selectionChange(before, after, label)]));
+    },
+  };
+}
+
+function modifierMode({ shift, ctrl }: ToolInput): SelectionMode | null {
+  if (shift && ctrl) return 'intersect';
+  if (shift) return 'add';
+  if (ctrl) return 'subtract';
+  return null;
+}
+
+/**
+ * Rectangle marquee: dragging selects the spanned pixels. Clicking without
+ * dragging is an empty shape, which deselects in replace mode.
  */
 const select: Tool = {
   id: 'select',
@@ -222,24 +275,75 @@ const select: Tool = {
   shortcut: 'm',
   paints: false,
   begin(editor, start) {
-    const { doc } = editor;
-    const before = doc.selection;
-    const floating = doc.floating;
-    // Show the new marquee rather than the float's outline from the start.
-    editor.previewFloating(null);
+    const selection = selecting(editor, start);
     let dragged = false;
     return {
       move(input) {
-        dragged = true;
-        editor.previewSelection(clipRect(rectFromCorners(start, input), doc.width, doc.height));
+        // A Shift press re-sends the start pixel; that isn't a drag.
+        if (input.x !== start.x || input.y !== start.y) dragged = true;
+        if (dragged) selection.preview(rectMask(rectFromCorners(start, input)));
       },
       end() {
-        if (!dragged) editor.previewSelection(null);
-        const after = doc.selection;
-        const label = after ? 'Select' : 'Deselect';
-        editor.record(combineEdits(label, [floatingChange(floating, null, label), selectionChange(before, after, label)]));
+        if (!dragged) selection.preview(null);
+        selection.commit();
       },
     };
+  },
+};
+
+/**
+ * Freehand lasso: selects the pixels the path passes over and everything it
+ * encloses, the path being closed with a straight line on release. Clicking
+ * without dragging is an empty shape, which deselects in replace mode.
+ */
+const lasso: Tool = {
+  id: 'lasso',
+  label: 'Lasso select',
+  icon: 'lasso',
+  shortcut: 'q',
+  paints: false,
+  begin(editor, start) {
+    const selection = selecting(editor, start);
+    // A new selection replaces the old one, so stop showing it straight away.
+    if (selection.mode === 'replace') selection.preview(null);
+    const points: Point[] = [{ x: start.x, y: start.y }];
+    editor.previewLasso(points);
+    return {
+      move(input) {
+        const last = points[points.length - 1];
+        if (input.x === last.x && input.y === last.y) return;
+        points.push({ x: input.x, y: input.y });
+        editor.previewLasso(points);
+      },
+      end() {
+        editor.previewLasso(null);
+        selection.preview(points.length > 1 ? lassoMask(points, documentRect(editor.doc)) : null);
+        selection.commit();
+      },
+    };
+  },
+};
+
+/**
+ * Magic wand: selects the pixels of the clicked color on the active layer,
+ * either the touching ones (4-connected, like fill) or all of them, per the
+ * Selection panel. Clicking outside the canvas is an empty shape.
+ */
+const wand: Tool = {
+  id: 'wand',
+  label: 'Magic wand',
+  icon: 'wand',
+  shortcut: 'w',
+  paints: false,
+  begin(editor, start) {
+    const selection = selecting(editor, start);
+    const { doc } = editor;
+    const layer = editor.activeLayer;
+    const region = editor.wandContiguous
+      ? floodRegion(doc, layer, start.x, start.y)
+      : colorRegion(doc, layer, start.x, start.y);
+    selection.preview(maskFromOffsets(region, doc.width));
+    return { move() {}, end: () => selection.commit() };
   },
 };
 
@@ -282,9 +386,9 @@ const move: Tool = {
           const { values, moved } = moveFloating(doc, layer, origin, dx, dy);
           write(values);
           editor.previewFloating(moved);
-          editor.previewSelection(clipRect(moved.rect, doc.width, doc.height));
+          editor.previewSelection(clipMask(moved, doc.width, doc.height));
         } else {
-          write(movedPixels(doc, layer, documentRect(doc), dx, dy));
+          write(movedPixels(doc, layer, dx, dy));
         }
         editor.requestRender();
       },
@@ -349,6 +453,8 @@ const reference: Tool = {
 /** Toolbar order. Hidden tools are last. */
 export const TOOLS: readonly Tool[] = [
   select,
+  lasso,
+  wand,
   move,
   pencil,
   eraser,

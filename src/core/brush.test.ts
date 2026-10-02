@@ -68,18 +68,27 @@ describe('brushMask', () => {
   });
 
   it('outlines a single pixel with four unit runs on the outside', () => {
+    const convex = { from: 0, to: 1, concaveFrom: false, concaveTo: false };
     expect(brushMask(round(1)).outline).toEqual([
-      { horizontal: true, at: 0, from: 0, to: 1, out: -1 },
-      { horizontal: true, at: 1, from: 0, to: 1, out: 1 },
-      { horizontal: false, at: 0, from: 0, to: 1, out: -1 },
-      { horizontal: false, at: 1, from: 0, to: 1, out: 1 },
+      { horizontal: true, at: 0, out: -1, ...convex },
+      { horizontal: true, at: 1, out: 1, ...convex },
+      { horizontal: false, at: 0, out: -1, ...convex },
+      { horizontal: false, at: 1, out: 1, ...convex },
     ]);
   });
 
   it('merges straight stretches of the border into single runs', () => {
     // A square is four runs; a 3px plus has three runs per side.
     expect(brushMask(square(6)).outline).toHaveLength(4);
-    expect(brushMask(square(6)).outline[0]).toEqual({ horizontal: true, at: -3, from: -3, to: 3, out: -1 });
+    expect(brushMask(square(6)).outline[0]).toEqual({
+      horizontal: true,
+      at: -3,
+      from: -3,
+      to: 3,
+      out: -1,
+      concaveFrom: false,
+      concaveTo: false,
+    });
     expect(brushMask(round(3)).outline).toHaveLength(12);
   });
 

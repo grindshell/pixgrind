@@ -8,7 +8,7 @@ import {
   type FloatingPixels,
   type PixelDocument,
 } from './pixelDocument.ts';
-import { rectContains, type Rect } from './rect.ts';
+import { maskHas, type Mask } from './mask.ts';
 
 /** A pixel-level change to one layer, stored as a diff. */
 export interface PixelEdit {
@@ -73,7 +73,7 @@ export interface DocumentState {
   palette: Palette;
   /** Layer objects are held by reference, as in layer add/remove edits. */
   layers: Layer[];
-  selection: Rect | null;
+  selection: Mask | null;
   floating: FloatingPixels | null;
 }
 
@@ -120,8 +120,8 @@ export interface PaletteEdit {
 export interface SelectionEdit {
   kind: 'selection';
   label: string;
-  before: Rect | null;
-  after: Rect | null;
+  before: Mask | null;
+  after: Mask | null;
 }
 
 /**
@@ -345,8 +345,8 @@ export interface PixelEditSession {
   finish(): PixelEdit | null;
 }
 
-/** Starts a session. With `clip`, writes outside that rectangle are ignored (e.g. painting inside a selection). */
-export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, clip: Rect | null = null): PixelEditSession {
+/** Starts a session. With `clip`, writes outside those pixels are ignored (e.g. painting inside a selection). */
+export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, clip: Mask | null = null): PixelEditSession {
   const original = new Map<number, number>();
   let finished = false;
 
@@ -355,7 +355,7 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
 
     setPixel(x, y, index) {
       if (finished) throw new Error('Pixel edit session already finished');
-      if (!inBounds(doc, x, y) || (clip && !rectContains(clip, x, y))) return false;
+      if (!inBounds(doc, x, y) || (clip && !maskHas(clip, x, y))) return false;
       const offset = y * doc.width + x;
       const previous = layer.pixels[offset];
       if (!setPixel(doc, layer, x, y, index)) return false;

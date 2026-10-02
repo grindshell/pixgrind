@@ -17,11 +17,25 @@ export function rectFromCorners(a: Point, b: Point): Rect {
 
 /** The part of `rect` inside a `width`×`height` area at the origin, or null if none. */
 export function clipRect(rect: Rect, width: number, height: number): Rect | null {
-  const left = Math.max(0, rect.x);
-  const top = Math.max(0, rect.y);
-  const right = Math.min(width, rect.x + rect.width);
-  const bottom = Math.min(height, rect.y + rect.height);
+  return intersectRects(rect, { x: 0, y: 0, width, height });
+}
+
+/** The overlap of two rectangles, or null if they don't overlap. */
+export function intersectRects(a: Rect, b: Rect): Rect | null {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
   if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** The smallest rectangle containing both. */
+export function unionRects(a: Rect, b: Rect): Rect {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.width, b.x + b.width);
+  const bottom = Math.max(a.y + a.height, b.y + b.height);
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 

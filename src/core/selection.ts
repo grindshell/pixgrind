@@ -7,36 +7,33 @@ import {
   type SelectionEdit,
 } from './edits.ts';
 import type { Layer } from './layer.ts';
+import { clipMask, maskHas, masksEqual, type Mask } from './mask.ts';
 import { TRANSPARENT } from './palette.ts';
-import { documentRect, findLayer, inBounds, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
-import { clipRect, rectsEqual, translateRect, type Rect } from './rect.ts';
+import { findLayer, inBounds, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
+import { translateRect, type Rect } from './rect.ts';
 
 /** Changes the selection. `after` is clipped to the document. Null when nothing changes. */
-export function selectionEdit(doc: PixelDocument, after: Rect | null, label: string): SelectionEdit | null {
-  return selectionChange(doc.selection, after && clipRect(after, doc.width, doc.height), label);
+export function selectionEdit(doc: PixelDocument, after: Mask | null, label: string): SelectionEdit | null {
+  return selectionChange(doc.selection, after && clipMask(after, doc.width, doc.height), label);
 }
 
 /** A selection edit between two known states (e.g. after a live preview). Null when they are equal. */
-export function selectionChange(before: Rect | null, after: Rect | null, label: string): SelectionEdit | null {
-  return rectsEqual(before, after) ? null : { kind: 'selection', label, before, after };
+export function selectionChange(before: Mask | null, after: Mask | null, label: string): SelectionEdit | null {
+  return masksEqual(before, after) ? null : { kind: 'selection', label, before, after };
 }
 
 /**
- * New palette indices for every pixel touched by moving the contents of
- * `area` by (dx, dy): the area is cleared, then its non-transparent pixels
- * are stamped at the destination. Transparent pixels don't cover what's
- * beneath them. Pixels that land outside the document are dropped.
+ * New palette indices for every pixel touched by moving the whole of `layer`
+ * by (dx, dy): everything is cleared, then its non-transparent pixels are
+ * stamped at the destination. Pixels that land outside the document are
+ * dropped.
  */
-export function movedPixels(doc: PixelDocument, layer: Layer, area: Rect, dx: number, dy: number): Map<number, number> {
+export function movedPixels(doc: PixelDocument, layer: Layer, dx: number, dy: number): Map<number, number> {
   const values = new Map<number, number>();
-  const source = clipRect(area, doc.width, doc.height);
-  if (!source || (dx === 0 && dy === 0)) return values;
-
-  for (let y = source.y; y < source.y + source.height; y++) {
-    for (let x = source.x; x < source.x + source.width; x++) values.set(y * doc.width + x, TRANSPARENT);
-  }
-  for (let y = source.y; y < source.y + source.height; y++) {
-    for (let x = source.x; x < source.x + source.width; x++) {
+  if (dx === 0 && dy === 0) return values;
+  for (let offset = 0; offset < layer.pixels.length; offset++) values.set(offset, TRANSPARENT);
+  for (let y = 0; y < doc.height; y++) {
+    for (let x = 0; x < doc.width; x++) {
       const index = layer.pixels[y * doc.width + x];
       if (index !== TRANSPARENT && inBounds(doc, x + dx, y + dy)) values.set((y + dy) * doc.width + x + dx, index);
     }
@@ -44,16 +41,9 @@ export function movedPixels(doc: PixelDocument, layer: Layer, area: Rect, dx: nu
   return values;
 }
 
-/**
- * Moves the selected pixels of `layer` (the whole layer when nothing is
- * selected) by (dx, dy), and the selection with them. One undoable edit, or
- * null when nothing would change.
- */
-export function moveEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): Edit | null {
-  const { selection } = doc;
-  const pixels = pixelEditFromValues(layer, label, movedPixels(doc, layer, selection ?? documentRect(doc), dx, dy));
-  const moved = selection && clipRect(translateRect(selection, dx, dy), doc.width, doc.height);
-  return combineEdits(label, [pixels, selection ? selectionChange(selection, moved, label) : null]);
+/** Moves all of `layer` by (dx, dy), losing pixels moved off the document. Null when nothing would change. */
+export function moveLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): PixelEdit | null {
+  return pixelEditFromValues(layer, label, movedPixels(doc, layer, dx, dy));
 }
 
 /*
@@ -62,23 +52,30 @@ export function moveEdit(doc: PixelDocument, layer: Layer, dx: number, dy: numbe
  * moving and deleting do.
  */
 
-/** A copy of `layer`'s pixels in `rect`, which must be inside the document, row-major. */
-export function layerPixelsIn(doc: PixelDocument, layer: Layer, rect: Rect): Uint8Array {
+/**
+ * A copy of `layer`'s pixels in `area` (which must be inside the document),
+ * row-major over `area.rect`, with pixels outside the mask transparent.
+ */
+export function selectedPixels(doc: PixelDocument, layer: Layer, area: Mask): Uint8Array {
+  const { rect, bits } = area;
   const pixels = new Uint8Array(rect.width * rect.height);
   for (let j = 0; j < rect.height; j++) {
     const start = (rect.y + j) * doc.width + rect.x;
     pixels.set(layer.pixels.subarray(start, start + rect.width), j * rect.width);
+  }
+  if (bits) {
+    for (let i = 0; i < bits.length; i++) if (!bits[i]) pixels[i] = TRANSPARENT;
   }
   return pixels;
 }
 
 /** Lifts the selected pixels of `layer` into a float at the same place. Null without a selection. */
 export function liftSelection(doc: PixelDocument, layer: Layer): FloatingPixels | null {
-  const rect = doc.selection;
-  if (!rect) return null;
-  const pixels = layerPixelsIn(doc, layer, rect);
+  const { selection } = doc;
+  if (!selection) return null;
+  const pixels = selectedPixels(doc, layer, selection);
   // Under each lifted pixel is the hole it leaves: transparent, Uint8Array's default.
-  return { layerId: layer.id, rect, pixels, under: new Uint8Array(pixels.length) };
+  return { layerId: layer.id, rect: selection.rect, bits: selection.bits, pixels, under: new Uint8Array(pixels.length) };
 }
 
 /**
@@ -101,23 +98,25 @@ export function moveFloating(
 }
 
 /**
- * Puts new pixels down as a float on `layer` at `rect` (which may extend
- * past the document), replacing any current float. Pasting does this.
+ * Puts new pixels down as a float on `layer`, replacing any current float.
+ * `area` is its shape and place (which may extend past the document), and
+ * `pixels` are row-major over `area.rect`, transparent outside the mask.
+ * Pasting does this.
  */
 export function placeFloatingEdit(
   doc: PixelDocument,
   layer: Layer,
   pixels: Uint8Array,
-  rect: Rect,
+  area: Mask,
   label: string,
 ): Edit | null {
   const values = new Map<number, number>();
-  const under = stampValues(doc, layer, pixels, rect, values);
-  const floating: FloatingPixels = { layerId: layer.id, rect, pixels, under };
+  const under = stampValues(doc, layer, pixels, area.rect, values);
+  const floating: FloatingPixels = { layerId: layer.id, rect: area.rect, bits: area.bits, pixels, under };
   return combineEdits(label, [
     pixelEditFromValues(layer, label, values),
     floatingChange(doc.floating, floating, label),
-    selectionChange(doc.selection, clipRect(rect, doc.width, doc.height), label),
+    selectionChange(doc.selection, clipMask(area, doc.width, doc.height), label),
   ]);
 }
 
@@ -145,17 +144,17 @@ function stampValues(
  * Moves the selected pixels of `layer` by (dx, dy) as a float, lifting them
  * first unless they already float, so pixels moved past the edge are kept
  * until the float is dropped. Without a selection the whole layer moves
- * instead (`moveEdit`), and pixels moved off the document are lost.
+ * instead (`moveLayerEdit`), and pixels moved off the document are lost.
  */
 export function moveSelectionEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): Edit | null {
   const origin = doc.floating?.layerId === layer.id ? doc.floating : liftSelection(doc, layer);
-  if (!origin) return moveEdit(doc, layer, dx, dy, label);
+  if (!origin) return moveLayerEdit(doc, layer, dx, dy, label);
   if (dx === 0 && dy === 0) return null;
   const { values, moved } = moveFloating(doc, layer, origin, dx, dy);
   return combineEdits(label, [
     pixelEditFromValues(layer, label, values),
     floatingChange(doc.floating, moved, label),
-    selectionChange(doc.selection, clipRect(moved.rect, doc.width, doc.height), label),
+    selectionChange(doc.selection, clipMask(moved, doc.width, doc.height), label),
   ]);
 }
 
@@ -208,10 +207,13 @@ export function clearSelectionEdit(doc: PixelDocument, layer: Layer): PixelEdit 
 }
 
 /** Clears `layer`'s pixels in `area` (inside the document) to transparent. Null when nothing changes. */
-export function clearAreaEdit(doc: PixelDocument, layer: Layer, area: Rect, label: string): PixelEdit | null {
+export function clearAreaEdit(doc: PixelDocument, layer: Layer, area: Mask, label: string): PixelEdit | null {
   const values = new Map<number, number>();
-  for (let y = area.y; y < area.y + area.height; y++) {
-    for (let x = area.x; x < area.x + area.width; x++) values.set(y * doc.width + x, TRANSPARENT);
+  const { rect } = area;
+  for (let y = rect.y; y < rect.y + rect.height; y++) {
+    for (let x = rect.x; x < rect.x + rect.width; x++) {
+      if (maskHas(area, x, y)) values.set(y * doc.width + x, TRANSPARENT);
+    }
   }
   return pixelEditFromValues(layer, label, values);
 }

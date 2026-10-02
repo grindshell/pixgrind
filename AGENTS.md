@@ -27,9 +27,9 @@ Built so far:
 - Layer compositing, rasterization (line, rect), flood fill, color/hex
   utilities.
 - Canvas renderer with checkerboard backdrop, integer zoom, crisp scaling.
-- Tools in a vertical strip beside the canvas: Rectangle select (M), Move
-  (V), Pencil (B), Eraser (E), Line (L), Rectangle (R), Filled rectangle
-  (Shift+R), Fill (G), Eyedropper (I).
+- Tools in a vertical strip beside the canvas: Rectangle select (M), Lasso
+  select (Q), Magic wand (W), Move (V), Pencil (B), Eraser (E), Line (L),
+  Rectangle (R), Filled rectangle (Shift+R), Fill (G), Eyedropper (I).
   - The left button paints the primary color and the right button the
     secondary color (transparent by default, so right-click erases). X
     swaps them.
@@ -41,7 +41,14 @@ Built so far:
   the brush under the pointer. A "Pixel perfect" option (1px only) makes
   Pencil and Eraser drop the corners of L-shaped turns.
 - Selection:
-  - Rectangle marquee. Ctrl+A selects all; Ctrl+D or Escape deselects.
+  - Any shape of pixels. Made with the rectangle marquee, the lasso
+    (freehand; selects the pixels it passes over and everything inside),
+    or the magic wand (the clicked color on the active layer, touching
+    pixels only or all of them). Ctrl+A selects all; Ctrl+D or Escape
+    deselects. A click without dragging deselects.
+  - Selection panel: a mode for the selection tools (new, add, subtract,
+    intersect) and the wand's Contiguous option. Shift adds, Ctrl/Cmd
+    subtracts and Ctrl+Shift intersects, whatever the mode.
   - Moving selected pixels (Move tool, or arrow keys with it: 1px, 10px
     with Shift) floats them.
     - Pixels moved off the canvas are kept, shown faintly outside it, until
@@ -53,7 +60,8 @@ Built so far:
   - Painting and fill are clipped to the selection.
   - Selection changes, moves and drops are undoable.
 - Copy/cut/paste (Ctrl/Cmd+C, X, V):
-  - Copy takes the float, else the selection, else the whole active layer.
+  - Copy takes the float, else the selection, else the whole active layer,
+    with its selection shape.
   - Paste floats it on the active layer, where it was copied from if that
     fits, else centered, and switches to Move.
   - Colors follow the palette as it was at copy time.
@@ -106,10 +114,13 @@ Follow-ups:
 - Selection:
   - Whole-layer moves (nothing selected) don't float, so pixels moved off
     the canvas are still lost on release.
-  - Non-rectangular selections (lasso, magic wand).
+  - Invert selection (Ctrl+Shift+I is taken by browser dev tools), a
+    polygonal lasso (click corner points), and a wand option to sample all
+    visible layers.
   - Clipboard: paste into a new layer, copy merged (all visible layers), and
     on-screen buttons for touch devices (keyboard only today).
-  - Animated marching ants.
+  - Animated marching ants (shift the outline pattern's transform per
+    frame).
   - Dragging inside a selection with the marquee to move only the outline.
 - Palettes:
   - Reorder colors by dragging.
@@ -175,7 +186,8 @@ src/
                  constraints), brush (footprints, brush lines and
                  rectangles), pixelPerfect (L-corner removal for 1px
                  strokes), clipboard (copy/cut/paste clips), rect (Rect
-                 geometry), floodFill, image (RGBA
+                 geometry), mask (pixel sets: selection shapes, lasso,
+                 combining, outlines), floodFill (+ colorRegion), image (RGBA
                  ↔ indices, upscale, flatten), edits (undoable changes),
                  layerEdits / selection / paletteEdits / documentEdits (edit
                  constructors), history
@@ -191,7 +203,7 @@ src/
                  commands (non-pointer actions like select all, nudge),
                  fileCommands (open/save project, open/add/export image),
                  keyboard shortcuts, clipboard (copy/cut/paste events and
-                 the system clipboard), brush panel,
+                 the system clipboard), brush and selection panels,
                  history controls, file panel, palette and palettes (library)
                  panels, layers panel, reference panel (+ loadReferenceFile),
                  DOM helpers (dom.ts) and inline SVG
@@ -320,8 +332,8 @@ storage without updating this section and the palette-swap design.
   0.01–64.
 - Rendering order: checkerboard, then the reference if below, then artwork,
   then the reference if above, then floating pixels off the document, then
-  the selection (or float) outline, then the brush outline.
-  The reference is clipped
+  the selection (or float) outline, then a lasso being drawn, then the
+  brush outline. The reference is clipped
   to the document rect and drawn with `globalAlpha` and its own smoothing
   setting (on by default for photos). Artwork smoothing stays off.
 - Move mode is a hidden tool (`reference`) toggled from the panel.
@@ -414,9 +426,9 @@ storage without updating this section and the palette-swap design.
     fills inside it when filled. Corners grow with the brush, as with lines.
   - Canvas input reports the hovered pixel (`Editor.setPointer`) on move,
     pan, wheel zoom and pointer down, and clears it on leave. The renderer
-    draws the mask's `outline` runs one device pixel outside the footprint,
-    dashed black on white. It is hidden for non-brush tools and over hidden
-    layers.
+    draws the mask's `outline` runs (`outlineRuns`, as for selections) one
+    device pixel outside the footprint, dashed black on white. It is hidden
+    for non-brush tools and over hidden layers.
   - `[` / `]` call `stepBrushSize`: one step at a time up to 8, then
     coarser.
 - Fill is 4-connected (`core/floodFill.ts`, iterative). 8-connected fills
@@ -427,16 +439,48 @@ storage without updating this section and the palette-swap design.
 
 ### Selection
 
-- `doc.selection` is a `Rect` (always inside the document) or null. It lives
+- `doc.selection` is a `Mask` (always inside the document) or null. It lives
   on the document, not the editor, so selection changes are undoable and a
   move restores both pixels and outline in one step. It isn't image data, so
   don't export it.
+- Masks (`core/mask.ts`) are sets of pixels: a `rect` plus `bits` (one byte
+  per pixel of the rect), or `bits: null` for the whole rect.
+  - Always normalized: never empty (null means no pixels), `rect` is the
+    tight bounding box, and `bits` is null exactly when every pixel of the
+    rect is in. So equal sets compare equal (`masksEqual`), and rectangle
+    selections stay cheap.
+  - Never mutated. Moves (`translateMask`) share `bits`; the renderer
+    caches outlines per `bits` array, so dragging a float doesn't recompute
+    them.
+  - `rectMask`, `maskFromBits`, `maskFromOffsets` (flood regions),
+    `lassoMask`, `clipMask` (always returns a plain mask, even for a float
+    or clip), `combineMasks(selection, shape, mode)`.
+- Selection tools (marquee, lasso, wand) share `selecting()` in
+  `ui/tools.ts`.
+  - The mode is fixed at the press: Ctrl+Shift intersects, Shift adds,
+    Ctrl/Cmd subtracts, else `Editor.selectionMode` (the Selection panel).
+    `ToolInput.ctrl` is Ctrl or Cmd.
+  - The tool previews `combineMasks(start selection, shape, mode)` and
+    records it on release, with the float's drop, as one entry ("Select" or
+    "Deselect").
+  - A click with the marquee or lasso is an empty shape: it deselects in
+    replace mode, and changes nothing when adding or subtracting.
+  - Lasso: the path's pixels plus pixel centers inside the closed polygon
+    (nonzero winding, so loops drawn over themselves stay filled). While
+    dragging only the path is drawn (`Editor.previewLasso`); in replace
+    mode the old selection is hidden at once.
+  - Wand: `floodRegion` (contiguous, 4-connected like fill) or
+    `colorRegion` (every pixel of that index) on the active layer, per
+    `Editor.wandContiguous`.
 - With a selection, `editor.beginStroke` clips writes to it, and fill passes
   it to `floodRegion` as bounds. The flood itself stays inside rather than
-  being clipped afterwards. Pass `{ clipToSelection: false }` for tools that
-  must write outside it (Move).
+  being clipped afterwards (unselected pixels are pre-marked as visited).
+  Pass `{ clipToSelection: false }` for tools that must write outside it
+  (Move).
 - **Floating selections** (`doc.floating: FloatingPixels | null`): moving
-  selected pixels lifts them into a float.
+  selected pixels lifts them into a float. A float is a `Mask` too (its
+  selection shape), plus its pixels; those outside the mask are
+  transparent, so they cover nothing.
   - The float's pixels are always stamped into its layer at `rect`. So
     export, save, the eyedropper, thumbnails, palette tools and color usage
     all just see layer pixels.
@@ -446,10 +490,11 @@ storage without updating this section and the palette-swap design.
   - Lifting and dropping therefore change no pixels. Moving (`moveFloating`)
     puts `under` back, then stamps at the new place, recording the new
     `under`. Transparent float pixels cover nothing.
-  - `rect` may extend past the document. `doc.selection` is kept as `rect`
-    clipped to the document (null when entirely off it), so selection
-    clipping still works. The renderer outlines `rect` instead, and draws
-    off-document float pixels at half their layer's opacity.
+  - `rect` may extend past the document. `doc.selection` is kept as the
+    float's mask clipped to the document (null when entirely off it), so
+    selection clipping still works. The renderer outlines the float's whole
+    mask instead, and draws off-document float pixels at half their layer's
+    opacity.
   - Edits: a `floating` edit sets or clears the float. `moveSelectionEdit`
     (nudge) lifts if needed and batches pixels + floating + selection.
     `dropFloatingEdit` and `deleteFloatingEdit` (Delete key: uncovers
@@ -459,11 +504,12 @@ storage without updating this section and the palette-swap design.
     unless `editSetsFloating(edit)`. Dropping changes no pixels, so edits
     built while the float existed stay valid, and undo restores the float.
     Code that changes the document doesn't need to know about floats.
-  - The marquee drops the float at gesture start (`previewFloating(null)`)
-    so the new marquee shows, and records the drop with the selection.
+  - Selection tools drop the float at gesture start (`previewFloating(null)`)
+    so the new selection shows, and record the drop with the selection.
   - With no selection, Move moves the whole layer without floating:
     `movedPixels` from the untouched original on each pointer move, and
-    pixels outside the document are lost on release.
+    pixels outside the document are lost on release (`moveLayerEdit` for
+    nudges).
   - A float belongs to a layer (`layerId`). Moving on another layer lifts a
     new float there, replacing (dropping) the old one.
 - Move tool: on each pointer move, `session.revert()`, then rewrite from the
@@ -475,8 +521,9 @@ storage without updating this section and the palette-swap design.
 
 ### Clipboard
 
-- `core/clipboard.ts` (pure): a `PixelClip` is the copied indices, the rect
-  they came from, and the palette colors at copy time.
+- `core/clipboard.ts` (pure): a `PixelClip` is the copied indices, the mask
+  they came from (shape and place), and the palette colors at copy time.
+  Pasting floats the same shape.
   - `copyPixels` takes the float on the active layer (including off-canvas
     pixels), else the selection, else the whole layer. `cutEdit` removes
     the same thing.
@@ -502,8 +549,15 @@ storage without updating this section and the palette-swap design.
     included). Any other image is mapped to the nearest palette colors.
   - Text fields keep their normal clipboard. Hidden layers refuse with a
     message in the File panel status.
-- The renderer draws the selection as a 1-device-pixel dashed black/white
-  outline.
+- The renderer draws the selection's `maskOutline` one device pixel inside
+  its edge, stroked with a diagonal black/white stripe pattern fixed to the
+  canvas (`createAnts`), not a dash pattern: dashes restart on every run, so
+  jagged outlines would come out mostly black.
+  - `OutlineRun`s say whether each end is a concave corner. Lines inside an
+    edge reach one device pixel further at concave corners, lines outside
+    (the brush) at convex ones (`traceRun`); otherwise corners are left
+    open.
+  - The lasso path is drawn with the same pattern through pixel centers.
 
 ### Undo/redo
 

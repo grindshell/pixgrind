@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdit, beginPixelEdit, combineEdits, pixelEditFromValues, type PixelEdit } from './edits.ts';
+import { rectMask } from './mask.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, getPixel, setPixel, type PixelDocument } from './pixelDocument.ts';
 
@@ -83,14 +84,20 @@ describe('beginPixelEdit', () => {
     expect(Array.from(edit!.offsets)).toEqual([1]);
   });
 
-  it('ignores writes outside the clip rectangle', () => {
+  it('ignores writes outside the clip mask', () => {
     const doc = createDocument(4, 4, palette);
     const [layer] = doc.layers;
-    const session = beginPixelEdit(doc, layer, 'Pencil', { x: 1, y: 1, width: 2, height: 2 });
+    const session = beginPixelEdit(doc, layer, 'Pencil', rectMask({ x: 1, y: 1, width: 2, height: 2 }));
     expect(session.setPixel(0, 0, 1)).toBe(false);
     expect(session.setPixel(3, 2, 1)).toBe(false);
     expect(session.setPixel(2, 2, 1)).toBe(true);
     expect(Array.from(session.finish()!.offsets)).toEqual([10]);
+
+    // Inside the clip's rectangle but not its mask.
+    const diagonal = { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 0, 1) };
+    const clipped = beginPixelEdit(doc, layer, 'Pencil', diagonal);
+    expect(clipped.setPixel(1, 0, 1)).toBe(false);
+    expect(clipped.setPixel(1, 1, 1)).toBe(true);
   });
 
   it('cannot be written to after finishing', () => {

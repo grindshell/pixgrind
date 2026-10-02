@@ -5,14 +5,17 @@ import type { Layer } from './layer.ts';
 import { TRANSPARENT, type Palette } from './palette.ts';
 import { nearestColorIndex } from './paletteEdits.ts';
 import { documentRect, MAX_DOCUMENT_SIZE, type PixelDocument } from './pixelDocument.ts';
+import { rectMask, type Mask } from './mask.ts';
 import type { Rect } from './rect.ts';
-import { clearAreaEdit, deleteFloatingEdit, layerPixelsIn, placeFloatingEdit } from './selection.ts';
+import { clearAreaEdit, deleteFloatingEdit, placeFloatingEdit, selectedPixels } from './selection.ts';
 
-/** Copied pixels, independent of the document they came from. */
-export interface PixelClip {
-  /** Where they were copied from, in document coordinates; pasting returns them there when it can. */
-  rect: Rect;
-  /** Palette indices, row-major over `rect`. */
+/**
+ * Copied pixels, independent of the document they came from. As a mask it's
+ * the shape they were copied with, where they were copied from (document
+ * coordinates); pasting returns them there when it can.
+ */
+export interface PixelClip extends Mask {
+  /** Palette indices, row-major over `rect`, transparent outside the mask. */
   pixels: Uint8Array;
   /** The palette's colors when copied, so a paste keeps the look even if the palette has changed since. */
   colors: readonly Rgba[];
@@ -25,15 +28,17 @@ export interface PixelClip {
 export function copyPixels(doc: PixelDocument, layer: Layer): PixelClip {
   const colors = [...doc.palette.colors];
   const { floating } = doc;
-  if (floating?.layerId === layer.id) return { rect: floating.rect, pixels: floating.pixels.slice(), colors };
-  const rect = doc.selection ?? documentRect(doc);
-  return { rect, pixels: layerPixelsIn(doc, layer, rect), colors };
+  if (floating?.layerId === layer.id) {
+    return { rect: floating.rect, bits: floating.bits, pixels: floating.pixels.slice(), colors };
+  }
+  const area = doc.selection ?? rectMask(documentRect(doc));
+  return { rect: area.rect, bits: area.bits, pixels: selectedPixels(doc, layer, area), colors };
 }
 
 /** Removes what `copyPixels` took (cut): the floating pixels, else the selection's or whole layer's. */
 export function cutEdit(doc: PixelDocument, layer: Layer): Edit | null {
   if (doc.floating?.layerId === layer.id) return deleteFloatingEdit(doc, 'Cut');
-  return clearAreaEdit(doc, layer, doc.selection ?? documentRect(doc), 'Cut');
+  return clearAreaEdit(doc, layer, doc.selection ?? rectMask(documentRect(doc)), 'Cut');
 }
 
 /** An image (e.g. from another app) as a clip, in nearest palette colors, centered on the document. */
@@ -43,6 +48,7 @@ export function clipFromImage(image: RgbaImage, doc: PixelDocument): PixelClip {
   }
   return {
     rect: centeredRect(doc, image.width, image.height),
+    bits: null,
     pixels: indexImageToPalette(image.data, doc.palette),
     colors: [...doc.palette.colors],
   };
@@ -92,7 +98,8 @@ export function pasteRect(doc: PixelDocument, clip: PixelClip): Rect {
  * one), ready to be moved. One undoable edit.
  */
 export function pasteEdit(doc: PixelDocument, layer: Layer, clip: PixelClip, label = 'Paste'): Edit | null {
-  return placeFloatingEdit(doc, layer, clipIndices(clip, doc.palette), pasteRect(doc, clip), label);
+  const area = { rect: pasteRect(doc, clip), bits: clip.bits };
+  return placeFloatingEdit(doc, layer, clipIndices(clip, doc.palette), area, label);
 }
 
 function centeredRect(doc: PixelDocument, width: number, height: number): Rect {

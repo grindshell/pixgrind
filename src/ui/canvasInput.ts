@@ -22,7 +22,7 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
   const toolInput = (e: MouseEvent): ToolInput => {
     const rect = canvas.getBoundingClientRect();
     const exact = screenToDocument(editor.viewport, e.clientX - rect.left, e.clientY - rect.top);
-    return { x: Math.floor(exact.x), y: Math.floor(exact.y), exact, shift: e.shiftKey };
+    return { x: Math.floor(exact.x), y: Math.floor(exact.y), exact, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
   };
 
   /** Tracks the pixel under the pointer for the brush outline. */

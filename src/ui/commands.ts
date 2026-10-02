@@ -1,4 +1,5 @@
 import { combineEdits } from '../core/edits.ts';
+import { rectMask } from '../core/mask.ts';
 import { documentRect } from '../core/pixelDocument.ts';
 import {
   clearSelectionEdit,
@@ -16,7 +17,7 @@ import type { Editor } from './editor.ts';
  */
 
 export function selectAll(editor: Editor): void {
-  editor.perform(selectionEdit(editor.doc, documentRect(editor.doc), 'Select all'));
+  editor.perform(selectionEdit(editor.doc, rectMask(documentRect(editor.doc)), 'Select all'));
 }
 
 /** Deselects, dropping a floating selection where it is. */

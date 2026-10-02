@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdit, editSetsFloating, type Edit } from './edits.ts';
 import { History } from './history.ts';
+import { rectMask, type Mask } from './mask.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, type PixelDocument } from './pixelDocument.ts';
 import type { Rect } from './rect.ts';
@@ -10,8 +11,8 @@ import {
   dropFloatingEdit,
   liftSelection,
   movedPixels,
-  moveEdit,
   moveFloating,
+  moveLayerEdit,
   moveSelectionEdit,
   selectionChange,
   selectionEdit,
@@ -41,120 +42,77 @@ describe('selection edits', () => {
   it('select, then undo/redo restores the previous selection', () => {
     const doc = createDocument(8, 8, palette);
     const history = new History();
-    perform(doc, history, selectionEdit(doc, { x: 1, y: 1, width: 3, height: 2 }, 'Select'));
-    expect(doc.selection).toEqual({ x: 1, y: 1, width: 3, height: 2 });
+    const selected = rectMask({ x: 1, y: 1, width: 3, height: 2 });
+    perform(doc, history, selectionEdit(doc, selected, 'Select'));
+    expect(doc.selection).toEqual(selected);
     perform(doc, history, selectionEdit(doc, null, 'Deselect'));
     expect(doc.selection).toBeNull();
     history.undo(doc);
-    expect(doc.selection).toEqual({ x: 1, y: 1, width: 3, height: 2 });
+    expect(doc.selection).toEqual(selected);
     history.undo(doc);
     expect(doc.selection).toBeNull();
   });
 
   it('clips to the document and returns null for no change', () => {
     const doc = createDocument(4, 4, palette);
-    expect(selectionEdit(doc, { x: 2, y: -1, width: 5, height: 3 }, 'Select')?.after).toEqual({ x: 2, y: 0, width: 2, height: 2 });
+    expect(selectionEdit(doc, rectMask({ x: 2, y: -1, width: 5, height: 3 }), 'Select')?.after).toEqual(
+      rectMask({ x: 2, y: 0, width: 2, height: 2 }),
+    );
     expect(selectionEdit(doc, null, 'Deselect')).toBeNull();
-    expect(selectionChange({ x: 0, y: 0, width: 1, height: 1 }, { x: 0, y: 0, width: 1, height: 1 }, 'x')).toBeNull();
+    const pixel = { x: 0, y: 0, width: 1, height: 1 };
+    expect(selectionChange(rectMask(pixel), rectMask({ ...pixel }), 'x')).toBeNull();
+    const diagonal = (): Mask => ({ rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 0, 1) });
+    expect(selectionChange(diagonal(), diagonal(), 'x')).toBeNull();
   });
 });
 
 describe('movedPixels', () => {
-  it('clears the source and stamps only non-transparent pixels', () => {
+  it('moves the whole layer, stamping only non-transparent pixels', () => {
     const doc = docFrom([
       '1200',
-      '0333',
+      '0300',
       '0000',
     ]);
-    const values = movedPixels(doc, doc.layers[0], { x: 0, y: 0, width: 2, height: 1 }, 2, 1);
-    for (const [offset, value] of values) doc.layers[0].pixels[offset] = value;
-    // (0,0)=1 → (2,1), (1,0)=2 → (3,1). Source cleared.
-    expect(rows(doc)).toEqual([
-      '0000',
-      '0312',
-      '0000',
-    ]);
-  });
-
-  it('keeps what is under transparent parts of the moved area', () => {
-    const doc = docFrom([
-      '10',
-      '03',
-    ]);
-    const values = movedPixels(doc, doc.layers[0], { x: 0, y: 0, width: 2, height: 1 }, 0, 1);
+    const values = movedPixels(doc, doc.layers[0], 2, 1);
     for (const [offset, value] of values) doc.layers[0].pixels[offset] = value;
     expect(rows(doc)).toEqual([
-      '00',
-      '13',
+      '0000',
+      '0012',
+      '0003',
     ]);
   });
 
   it('drops pixels moved off the document, and is empty for a zero move', () => {
     const doc = docFrom(['12']);
-    expect(movedPixels(doc, doc.layers[0], { x: 0, y: 0, width: 2, height: 1 }, 0, 0).size).toBe(0);
-    const values = movedPixels(doc, doc.layers[0], { x: 0, y: 0, width: 2, height: 1 }, 1, 0);
+    expect(movedPixels(doc, doc.layers[0], 0, 0).size).toBe(0);
+    const values = movedPixels(doc, doc.layers[0], 1, 0);
     for (const [offset, value] of values) doc.layers[0].pixels[offset] = value;
     expect(rows(doc)).toEqual(['01']);
   });
 });
 
-describe('moveEdit', () => {
-  it('moves the selection contents and the selection as one undoable edit', () => {
-    const doc = docFrom([
-      '1100',
-      '1100',
-      '0000',
-    ]);
-    doc.selection = { x: 0, y: 0, width: 2, height: 2 };
-    const history = new History();
-    perform(doc, history, moveEdit(doc, doc.layers[0], 1, 1));
-    expect(rows(doc)).toEqual([
-      '0000',
-      '0110',
-      '0110',
-    ]);
-    expect(doc.selection).toEqual({ x: 1, y: 1, width: 2, height: 2 });
-    history.undo(doc);
-    expect(rows(doc)).toEqual([
-      '1100',
-      '1100',
-      '0000',
-    ]);
-    expect(doc.selection).toEqual({ x: 0, y: 0, width: 2, height: 2 });
-  });
-
-  it('moves the whole layer when nothing is selected', () => {
+describe('moveLayerEdit', () => {
+  it('moves the whole layer as one undoable edit', () => {
     const doc = docFrom(['120']);
-    applyEdit(doc, moveEdit(doc, doc.layers[0], 1, 0)!, 'redo');
+    const history = new History();
+    perform(doc, history, moveLayerEdit(doc, doc.layers[0], 1, 0));
     expect(rows(doc)).toEqual(['012']);
-    expect(doc.selection).toBeNull();
+    history.undo(doc);
+    expect(rows(doc)).toEqual(['120']);
   });
 
-  it('clips the selection when moved partly off the document', () => {
-    const doc = docFrom(['11', '11']);
-    doc.selection = { x: 0, y: 0, width: 2, height: 2 };
-    applyEdit(doc, moveEdit(doc, doc.layers[0], 1, 0)!, 'redo');
-    expect(doc.selection).toEqual({ x: 1, y: 0, width: 1, height: 2 });
-    expect(rows(doc)).toEqual(['01', '01']);
-  });
-
-  it('moves only the selection when the selected pixels are all transparent', () => {
-    const doc = createDocument(4, 4, palette);
-    doc.selection = { x: 0, y: 0, width: 2, height: 2 };
-    const edit = moveEdit(doc, doc.layers[0], 1, 0);
-    expect(edit?.kind).toBe('selection');
-  });
-
-  it('is null for a zero move', () => {
+  it('is null when nothing would change', () => {
     const doc = docFrom(['12']);
-    expect(moveEdit(doc, doc.layers[0], 0, 0)).toBeNull();
+    expect(moveLayerEdit(doc, doc.layers[0], 0, 0)).toBeNull();
+    const empty = createDocument(3, 3, palette);
+    expect(moveLayerEdit(empty, empty.layers[0], 1, 1)).toBeNull();
   });
 });
 
 describe('floating selections', () => {
-  /** Selects `rect` and moves it by each step in turn, as separate history entries. */
-  function moveSteps(doc: PixelDocument, history: History, rect: Rect, steps: Array<[number, number]>): void {
-    doc.selection = rect;
+  /** Selects `area` and moves it by each step in turn, as separate history entries. */
+  function moveSteps(doc: PixelDocument, history: History, area: Rect | Mask, steps: Array<[number, number]>): void {
+    doc.selection = 'rect' in area ? area : rectMask(area);
     for (const [dx, dy] of steps) perform(doc, history, moveSelectionEdit(doc, doc.layers[0], dx, dy));
   }
 
@@ -164,10 +122,10 @@ describe('floating selections', () => {
     moveSteps(doc, history, { x: 1, y: 1, width: 2, height: 1 }, [[2, 0]]);
     expect(rows(doc)).toEqual(['0000', '0001', '0000']);
     expect(doc.floating?.rect).toEqual({ x: 3, y: 1, width: 2, height: 1 });
-    expect(doc.selection).toEqual({ x: 3, y: 1, width: 1, height: 1 });
+    expect(doc.selection).toEqual(rectMask({ x: 3, y: 1, width: 1, height: 1 }));
     perform(doc, history, moveSelectionEdit(doc, doc.layers[0], -2, 0));
     expect(rows(doc)).toEqual(['0000', '0120', '0000']);
-    expect(doc.selection).toEqual({ x: 1, y: 1, width: 2, height: 1 });
+    expect(doc.selection).toEqual(rectMask({ x: 1, y: 1, width: 2, height: 1 }));
   });
 
   it('uncovers what it passed over, and transparent parts cover nothing', () => {
@@ -199,7 +157,7 @@ describe('floating selections', () => {
     history.undo(doc);
     expect(rows(doc)).toEqual(['1200']);
     expect(doc.floating).toBeNull();
-    expect(doc.selection).toEqual({ x: 0, y: 0, width: 2, height: 1 });
+    expect(doc.selection).toEqual(rectMask({ x: 0, y: 0, width: 2, height: 1 }));
   });
 
   it('dropping keeps the pixels and forgets what they covered', () => {
@@ -224,7 +182,7 @@ describe('floating selections', () => {
     perform(doc, history, deleteFloatingEdit(doc));
     expect(rows(doc)).toEqual(['03']);
     expect(doc.floating).toBeNull();
-    expect(doc.selection).toEqual({ x: 1, y: 0, width: 1, height: 1 });
+    expect(doc.selection).toEqual(rectMask({ x: 1, y: 0, width: 1, height: 1 }));
     history.undo(doc);
     expect(rows(doc)).toEqual(['01']);
     expect(doc.floating).not.toBeNull();
@@ -232,11 +190,40 @@ describe('floating selections', () => {
 
   it('lifting changes no pixels', () => {
     const doc = docFrom(['12', '30']);
-    doc.selection = { x: 0, y: 0, width: 2, height: 2 };
+    doc.selection = rectMask({ x: 0, y: 0, width: 2, height: 2 });
     const floating = liftSelection(doc, doc.layers[0]);
     expect(Array.from(floating!.pixels)).toEqual([1, 2, 3, 0]);
     const { values } = moveFloating(doc, doc.layers[0], floating!, 0, 0);
     for (const [offset, value] of values) expect(doc.layers[0].pixels[offset]).toBe(value);
+  });
+
+  it('moves only the pixels in a non-rectangular selection, with its shape', () => {
+    const doc = docFrom([
+      '120',
+      '310',
+      '000',
+    ]);
+    const history = new History();
+    // An L: everything in the top-left 2×2 except the 2.
+    const shape: Mask = { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 1, 1) };
+    moveSteps(doc, history, shape, [[1, 1]]);
+    expect(rows(doc)).toEqual([
+      '020',
+      '010',
+      '031',
+    ]);
+    expect(doc.selection).toEqual({ rect: { x: 1, y: 1, width: 2, height: 2 }, bits: shape.bits });
+    history.undo(doc);
+    expect(rows(doc)).toEqual(['120', '310', '000']);
+  });
+
+  it('clips a non-rectangular selection moved partly off the document, and normalizes it', () => {
+    const doc = docFrom(['10', '01']);
+    const history = new History();
+    moveSteps(doc, history, { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 0, 1) }, [[1, 0]]);
+    // Only the top-left pixel is still on the document: a plain 1×1 rectangle.
+    expect(doc.selection).toEqual(rectMask({ x: 1, y: 0, width: 1, height: 1 }));
+    expect(rows(doc)).toEqual(['01', '00']);
   });
 
   it('falls back to moving the whole layer without a selection', () => {
@@ -248,7 +235,7 @@ describe('floating selections', () => {
 
   it('marks which edits manage the float themselves', () => {
     const doc = docFrom(['12']);
-    doc.selection = { x: 0, y: 0, width: 1, height: 1 };
+    doc.selection = rectMask({ x: 0, y: 0, width: 1, height: 1 });
     expect(editSetsFloating(moveSelectionEdit(doc, doc.layers[0], 1, 0)!)).toBe(true);
     expect(editSetsFloating(clearSelectionEdit(doc, doc.layers[0])!)).toBe(false);
   });
@@ -257,15 +244,20 @@ describe('floating selections', () => {
 describe('clearSelectionEdit', () => {
   it('clears only selected pixels', () => {
     const doc = docFrom(['123', '123']);
-    doc.selection = { x: 1, y: 0, width: 2, height: 1 };
+    doc.selection = rectMask({ x: 1, y: 0, width: 2, height: 1 });
     applyEdit(doc, clearSelectionEdit(doc, doc.layers[0])!, 'redo');
     expect(rows(doc)).toEqual(['100', '123']);
+
+    const masked = docFrom(['12', '31']);
+    masked.selection = { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(0, 1, 1, 0) };
+    applyEdit(masked, clearSelectionEdit(masked, masked.layers[0])!, 'redo');
+    expect(rows(masked)).toEqual(['10', '01']);
   });
 
   it('is null without a selection or when already clear', () => {
     const doc = docFrom(['100']);
     expect(clearSelectionEdit(doc, doc.layers[0])).toBeNull();
-    doc.selection = { x: 1, y: 0, width: 2, height: 1 };
+    doc.selection = rectMask({ x: 1, y: 0, width: 2, height: 1 });
     expect(clearSelectionEdit(doc, doc.layers[0])).toBeNull();
   });
 });

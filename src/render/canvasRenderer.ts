@@ -1,10 +1,10 @@
 import type { BrushMask } from '../core/brush.ts';
 import { alpha, blue, green, red } from '../core/color.ts';
 import { compositeRgba } from '../core/composite.ts';
+import { maskOutline, type Mask, type OutlineRun } from '../core/mask.ts';
 import { colorForIndex, type Palette } from '../core/palette.ts';
 import { findLayer, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
-import type { Rect } from '../core/rect.ts';
 import type { ReferenceImage } from './referenceImage.ts';
 import type { Viewport } from './viewport.ts';
 
@@ -13,6 +13,8 @@ const CHECKER_LIGHT = '#3a3a44';
 const CHECKER_DARK = '#2e2e37';
 const SELECTION_LIGHT = '#ffffff';
 const SELECTION_DARK = '#000000';
+/** Length in device pixels of one black and one white stretch of the selection outline. */
+const ANTS_PERIOD = 8;
 /** Floating pixels off the document are drawn this faint, relative to their layer. */
 const FLOATING_OVERHANG_ALPHA = 0.5;
 
@@ -25,6 +27,8 @@ export interface BrushCursor extends Point {
 export interface RenderOverlays {
   reference?: ReferenceImage | null;
   brush?: BrushCursor | null;
+  /** The path of a lasso being drawn, in document pixels. */
+  lasso?: readonly Point[] | null;
 }
 
 /** Draws a document onto a screen canvas: checkerboard backdrop, reference image, layer composite, selection. */
@@ -35,6 +39,9 @@ export class CanvasRenderer {
   private readonly docCanvas: HTMLCanvasElement;
   private readonly docCtx: CanvasRenderingContext2D;
   private readonly checker: CanvasPattern;
+  /** Diagonal black and white stripes in device pixels: lines drawn with it alternate every few pixels. */
+  private readonly ants: CanvasPattern;
+  private readonly outlines = new WeakMap<Uint8Array, readonly OutlineRun[]>();
   private imageData: ImageData | null = null;
   private floatingImage: { pixels: Uint8Array; palette: Palette; canvas: HTMLCanvasElement } | null = null;
   private cssWidth = 0;
@@ -46,6 +53,7 @@ export class CanvasRenderer {
     this.docCanvas = document.createElement('canvas');
     this.docCtx = get2dContext(this.docCanvas);
     this.checker = createChecker(this.ctx);
+    this.ants = createAnts(this.ctx);
   }
 
   /** The canvas's CSS size as of the last `resize`. */
@@ -64,9 +72,14 @@ export class CanvasRenderer {
 
   /**
    * Draws checkerboard, reference (if below), artwork, reference (if above),
-   * the selection outline, then the brush outline.
+   * floating pixels off the document, the selection outline, a lasso being
+   * drawn, then the brush outline.
    */
-  render(doc: PixelDocument, viewport: Viewport, { reference = null, brush = null }: RenderOverlays = {}): void {
+  render(
+    doc: PixelDocument,
+    viewport: Viewport,
+    { reference = null, brush = null, lasso = null }: RenderOverlays = {},
+  ): void {
     const { ctx } = this;
     const dpr = this.canvas.width / Math.max(1, this.cssWidth);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -93,8 +106,9 @@ export class CanvasRenderer {
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
     if (doc.floating) this.drawFloatingOverhang(doc, doc.floating, offsetX, offsetY, width, height, zoom);
     // A float's outline shows all of it, including any part off the document.
-    const outline = doc.floating?.rect ?? doc.selection;
+    const outline = doc.floating ?? doc.selection;
     if (outline) this.drawSelection(outline, offsetX, offsetY, zoom, dpr);
+    if (lasso) this.drawLasso(lasso, offsetX, offsetY, zoom, dpr);
     if (brush) this.drawBrush(brush, offsetX, offsetY, zoom, dpr);
   }
 
@@ -155,7 +169,8 @@ export class CanvasRenderer {
 
   /**
    * The brush footprint's border, one device pixel outside it so the pixels
-   * under the brush stay visible. Same dashed black-on-white as the selection.
+   * under the brush stay visible. Finer dashes than the selection, so the
+   * two don't blend together.
    */
   private drawBrush({ x, y, mask }: BrushCursor, offsetX: number, offsetY: number, zoom: number, dpr: number): void {
     const { ctx } = this;
@@ -164,18 +179,7 @@ export class CanvasRenderer {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.beginPath();
-    for (const run of mask.outline) {
-      // Runs reach one device pixel past each end, so convex corners close.
-      if (run.horizontal) {
-        const lineY = deviceY(run.at) + run.out * 0.5;
-        ctx.moveTo(deviceX(run.from) - 1, lineY);
-        ctx.lineTo(deviceX(run.to) + 1, lineY);
-      } else {
-        const lineX = deviceX(run.at) + run.out * 0.5;
-        ctx.moveTo(lineX, deviceY(run.from) - 1);
-        ctx.lineTo(lineX, deviceY(run.to) + 1);
-      }
-    }
+    for (const run of mask.outline) traceRun(ctx, run, deviceX, deviceY, 'outside');
     ctx.lineWidth = 1;
     ctx.strokeStyle = SELECTION_LIGHT;
     ctx.stroke();
@@ -212,22 +216,46 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  /** Dashed black-on-white outline along the selection's pixel edges, one device pixel wide. */
-  private drawSelection(selection: Rect, offsetX: number, offsetY: number, zoom: number, dpr: number): void {
+  /** Black-and-white striped outline just inside the selection's pixel edges, one device pixel wide. */
+  private drawSelection(selection: Mask, offsetX: number, offsetY: number, zoom: number, dpr: number): void {
     const { ctx } = this;
-    // Work in device pixels; +0.5 centers the 1px line on a pixel row so it stays sharp.
-    const left = Math.round((offsetX + selection.x * zoom) * dpr) + 0.5;
-    const top = Math.round((offsetY + selection.y * zoom) * dpr) + 0.5;
-    const right = Math.round((offsetX + (selection.x + selection.width) * zoom) * dpr) - 0.5;
-    const bottom = Math.round((offsetY + (selection.y + selection.height) * zoom) * dpr) - 0.5;
+    const { rect } = selection;
+    const deviceX = (x: number) => Math.round((offsetX + (rect.x + x) * zoom) * dpr);
+    const deviceY = (y: number) => Math.round((offsetY + (rect.y + y) * zoom) * dpr);
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.beginPath();
+    for (const run of this.outline(selection)) traceRun(ctx, run, deviceX, deviceY, 'inside');
     ctx.lineWidth = 1;
-    ctx.strokeStyle = SELECTION_LIGHT;
-    ctx.strokeRect(left, top, right - left, bottom - top);
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = SELECTION_DARK;
-    ctx.strokeRect(left, top, right - left, bottom - top);
+    ctx.strokeStyle = this.ants;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** A mask's border. Kept per `bits` array, which moves share, so dragging a float doesn't recompute it. */
+  private outline(mask: Mask): readonly OutlineRun[] {
+    if (!mask.bits) return maskOutline(mask);
+    let runs = this.outlines.get(mask.bits);
+    if (!runs) {
+      runs = maskOutline(mask);
+      this.outlines.set(mask.bits, runs);
+    }
+    return runs;
+  }
+
+  /** The path of a lasso being drawn, through the centers of its pixels. */
+  private drawLasso(points: readonly Point[], offsetX: number, offsetY: number, zoom: number, dpr: number): void {
+    const { ctx } = this;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.beginPath();
+    for (const { x, y } of points) {
+      // +0.5 keeps horizontal and vertical stretches on whole device pixels.
+      ctx.lineTo(Math.round((offsetX + (x + 0.5) * zoom) * dpr) + 0.5, Math.round((offsetY + (y + 0.5) * zoom) * dpr) + 0.5);
+    }
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = this.ants;
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -261,4 +289,55 @@ function createChecker(ctx: CanvasRenderingContext2D): CanvasPattern {
   const pattern = ctx.createPattern(tile, 'repeat');
   if (!pattern) throw new Error('Could not create checkerboard pattern');
   return pattern;
+}
+
+/**
+ * Stripes for the selection outline. Unlike a dash pattern, they're fixed to
+ * the canvas, so they stay even across corners and the many short runs of a
+ * jagged outline.
+ */
+function createAnts(ctx: CanvasRenderingContext2D): CanvasPattern {
+  const tile = document.createElement('canvas');
+  tile.width = tile.height = ANTS_PERIOD;
+  const tileCtx = get2dContext(tile);
+  tileCtx.fillStyle = SELECTION_LIGHT;
+  tileCtx.fillRect(0, 0, ANTS_PERIOD, ANTS_PERIOD);
+  tileCtx.fillStyle = SELECTION_DARK;
+  for (let y = 0; y < ANTS_PERIOD; y++) {
+    for (let x = 0; x < ANTS_PERIOD; x++) {
+      if ((x + y) % ANTS_PERIOD < ANTS_PERIOD / 2) tileCtx.fillRect(x, y, 1, 1);
+    }
+  }
+  const pattern = ctx.createPattern(tile, 'repeat');
+  if (!pattern) throw new Error('Could not create selection pattern');
+  return pattern;
+}
+
+/**
+ * Adds an outline run to the current path (in device pixels) as a
+ * one-device-pixel line just inside or outside the pixels' edge. The line
+ * reaches one device pixel past an end where the corner would otherwise be
+ * left open: convex corners for lines outside, concave ones for lines
+ * inside.
+ */
+function traceRun(
+  ctx: CanvasRenderingContext2D,
+  run: OutlineRun,
+  deviceX: (x: number) => number,
+  deviceY: (y: number) => number,
+  side: 'inside' | 'outside',
+): void {
+  const outside = side === 'outside';
+  const shift = (outside ? run.out : -run.out) * 0.5;
+  const before = outside !== run.concaveFrom ? 1 : 0;
+  const after = outside !== run.concaveTo ? 1 : 0;
+  if (run.horizontal) {
+    const y = deviceY(run.at) + shift;
+    ctx.moveTo(deviceX(run.from) - before, y);
+    ctx.lineTo(deviceX(run.to) + after, y);
+  } else {
+    const x = deviceX(run.at) + shift;
+    ctx.moveTo(x, deviceY(run.from) - before);
+    ctx.lineTo(x, deviceY(run.to) + after);
+  }
 }

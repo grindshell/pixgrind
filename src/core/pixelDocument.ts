@@ -1,4 +1,5 @@
 import { createLayer, type Layer } from './layer.ts';
+import type { Mask } from './mask.ts';
 import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
 import type { Rect } from './rect.ts';
 
@@ -14,11 +15,11 @@ export interface PixelDocument {
   /** Bottom to top. */
   layers: Layer[];
   /**
-   * Selected area, always inside the document, or null for none. Lives here
-   * (not in editor state) so selection changes go through undo history with
-   * the pixel moves they accompany. Not part of saved image data.
+   * Selected pixels, always inside the document, or null for none. Lives
+   * here (not in editor state) so selection changes go through undo history
+   * with the pixel moves they accompany. Not part of saved image data.
    */
-  selection: Rect | null;
+  selection: Mask | null;
   /** Selected pixels being moved, kept even where they hang off the document. Null when nothing floats. */
   floating: FloatingPixels | null;
 }
@@ -30,12 +31,16 @@ export interface PixelDocument {
  * that hang off the document, and what each stamped pixel covers. Moving
  * the float puts back what it covered and stamps it again elsewhere.
  * Dropping it just forgets this record. Never mutated: moves make a new one.
+ *
+ * As a mask it's the float's selection shape, in document coordinates; it
+ * may extend past the document.
  */
-export interface FloatingPixels {
+export interface FloatingPixels extends Mask {
   layerId: string;
-  /** Where the pixels are, in document coordinates; may extend past the document. */
-  rect: Rect;
-  /** The lifted palette indices, row-major over `rect`. Transparent ones don't cover anything. */
+  /**
+   * The lifted palette indices, row-major over `rect`. Transparent ones,
+   * which include every pixel outside the mask, don't cover anything.
+   */
   pixels: Uint8Array;
   /**
    * The layer's value under each non-transparent pixel inside the document,

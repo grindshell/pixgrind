@@ -1,3 +1,4 @@
+import { outlineRuns, type OutlineRun } from './mask.ts';
 import { plotLine, plotRect, type Point } from './raster.ts';
 
 export type BrushShape = 'round' | 'square';
@@ -26,21 +27,6 @@ export function stepBrushSize(size: number, direction: 1 | -1): number {
   return next ?? clampBrushSize(size);
 }
 
-/**
- * A straight run of the footprint's border, in pixel-corner coordinates
- * relative to the pointer pixel's top-left corner. Horizontal runs lie on
- * the line y = `at` from x = `from` to `to`; vertical runs on x = `at`.
- * `out` is the side away from the footprint: -1 for up/left, 1 for
- * down/right.
- */
-export interface BrushOutlineRun {
-  horizontal: boolean;
-  at: number;
-  from: number;
-  to: number;
-  out: -1 | 1;
-}
-
 /** A brush's footprint, as offsets from the pixel under the pointer. */
 export interface BrushMask {
   /** Every pixel the brush covers. */
@@ -51,8 +37,8 @@ export interface BrushMask {
    * pixels, so lines stamp them alone after the first point.
    */
   readonly edge: readonly Point[];
-  /** The footprint's border, for drawing the brush cursor. */
-  readonly outline: readonly BrushOutlineRun[];
+  /** The footprint's border, for drawing the brush cursor, relative to the pointer pixel's top-left corner. */
+  readonly outline: readonly OutlineRun[];
 }
 
 const masks = new Map<string, BrushMask>();
@@ -98,28 +84,12 @@ function buildMask(size: number, shape: BrushShape): BrushMask {
     }
   }
 
-  // Merge each side's unit edges into runs. A top edge is a pixel inside with
-  // the one above outside; the run lies on that pixel's top line.
-  const outline: BrushOutlineRun[] = [];
-  const addRuns = (horizontal: boolean, out: -1 | 1) => {
-    for (let line = 0; line < size; line++) {
-      let start: number | null = null;
-      for (let along = 0; along <= size; along++) {
-        const [i, j] = horizontal ? [along, line] : [line, along];
-        const [ni, nj] = horizontal ? [i, j + out] : [i + out, j];
-        const isEdge = along < size && inside(i, j) && !inside(ni, nj);
-        if (isEdge && start === null) start = along;
-        if (!isEdge && start !== null) {
-          outline.push({ horizontal, at: origin + line + (out > 0 ? 1 : 0), from: origin + start, to: origin + along, out });
-          start = null;
-        }
-      }
-    }
-  };
-  addRuns(true, -1);
-  addRuns(true, 1);
-  addRuns(false, -1);
-  addRuns(false, 1);
+  const outline = outlineRuns(size, size, inside).map((run) => ({
+    ...run,
+    at: origin + run.at,
+    from: origin + run.from,
+    to: origin + run.to,
+  }));
   return { pixels, edge, outline };
 }
 
