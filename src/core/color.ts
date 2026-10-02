@@ -31,6 +31,19 @@ export function parseHex(hex: string): Rgba {
   return Number.parseInt(digits, 16) >>> 0;
 }
 
+/**
+ * Perceptual-ish squared distance between two colors ("redmean" weighted
+ * RGB, plus alpha). Only meaningful for comparing distances.
+ */
+export function colorDistance(a: Rgba, b: Rgba): number {
+  const redMean = (red(a) + red(b)) / 2;
+  const dr = red(a) - red(b);
+  const dg = green(a) - green(b);
+  const db = blue(a) - blue(b);
+  const da = alpha(a) - alpha(b);
+  return (2 + redMean / 256) * dr * dr + 4 * dg * dg + (2 + (255 - redMean) / 256) * db * db + 3 * da * da;
+}
+
 /** Formats as `#rrggbb` when opaque, otherwise `#rrggbbaa`. */
 export function toHex(color: Rgba): string {
   const hex = (color >>> 0).toString(16).padStart(8, '0');

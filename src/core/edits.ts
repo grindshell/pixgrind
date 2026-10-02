@@ -1,4 +1,5 @@
 import type { Layer } from './layer.ts';
+import { clonePalette, type Palette } from './palette.ts';
 import { findLayer, inBounds, layerIndex, setPixel, type PixelDocument } from './pixelDocument.ts';
 import { rectContains, type Rect } from './rect.ts';
 
@@ -57,6 +58,14 @@ export interface LayerPropsEdit {
   after: LayerProps;
 }
 
+/** Replaces the document palette. Palettes are small, so whole snapshots are stored. */
+export interface PaletteEdit {
+  kind: 'palette';
+  label: string;
+  before: Palette;
+  after: Palette;
+}
+
 export interface SelectionEdit {
   kind: 'selection';
   label: string;
@@ -81,6 +90,7 @@ export type Edit =
   | LayerRemoveEdit
   | LayerMoveEdit
   | LayerPropsEdit
+  | PaletteEdit
   | SelectionEdit
   | BatchEdit;
 
@@ -144,6 +154,10 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
     }
     case 'layer-props':
       Object.assign(requireLayer(doc, edit.layerId, edit, direction), direction === 'redo' ? edit.after : edit.before);
+      return;
+    case 'palette':
+      // Copy, so live previews that mutate doc.palette can't reach into history.
+      doc.palette = clonePalette(direction === 'redo' ? edit.after : edit.before);
       return;
     case 'selection':
       doc.selection = direction === 'redo' ? edit.after : edit.before;

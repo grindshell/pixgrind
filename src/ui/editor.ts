@@ -1,3 +1,4 @@
+import type { Rgba } from '../core/color.ts';
 import { applyEdit, beginPixelEdit, type Edit, type PixelEdit, type PixelEditSession } from '../core/edits.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
@@ -9,6 +10,7 @@ import { attachCanvasInput } from './canvasInput.ts';
 import { el } from './dom.ts';
 import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
+import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
 import { createToolbar } from './toolbar.ts';
@@ -103,6 +105,16 @@ export class Editor {
   }
 
   /**
+   * Live palette color preview (e.g. while a color picker is dragged). Not
+   * recorded: follow up with `record(setColorEdit(doc, index, color, previous))`.
+   */
+  previewPaletteColor(index: number, color: Rgba): void {
+    if (index < 1 || index > this.doc.palette.colors.length) return;
+    this.doc.palette.colors[index - 1] = color;
+    this.requestRender();
+  }
+
+  /**
    * Live selection preview (e.g. while dragging a marquee or a move). Not
    * recorded: follow up with `record(selectionChange(before, after, label))`.
    */
@@ -181,6 +193,8 @@ export class Editor {
 
   private documentChanged(): void {
     this.syncActiveLayer();
+    // Keep the selected color valid when the palette shrinks.
+    this.primaryIndex = Math.min(Math.max(1, this.primaryIndex), Math.max(1, this.doc.palette.colors.length));
     this.requestRender();
     this.notify();
   }
@@ -211,7 +225,13 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
 
   const editor = new Editor(doc, canvas);
   stage.append(canvas);
-  sidebar.append(title, createHistoryControls(editor), createPalettePanel(editor), createLayersPanel(editor));
+  sidebar.append(
+    title,
+    createHistoryControls(editor),
+    createPalettePanel(editor),
+    createPaletteLibraryPanel(editor, openPaletteLibrary()),
+    createLayersPanel(editor),
+  );
   layout.append(sidebar, createToolbar(editor), stage);
   root.append(layout);
   attachCanvasInput(canvas, editor);

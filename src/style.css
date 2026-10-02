@@ -128,6 +128,89 @@ body,
   outline-offset: 1px;
 }
 
+.swatch:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+.icon-button.swatch-add {
+  width: auto;
+  height: auto;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+}
+
+/* Palette editing and library */
+
+.color-row,
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.color-picker {
+  flex: none;
+  width: 32px;
+  height: 26px;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.text-input,
+.select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.hex-input {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+.text-input:focus-visible,
+.select:focus-visible,
+.color-picker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.panel > .select {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.field-row .button {
+  flex: none;
+  padding: 3px 10px;
+}
+
+.icon-button.is-confirming {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+
+.panel-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.panel-status:empty {
+  display: none;
+}
+
 .stage {
   position: relative;
   overflow: hidden;

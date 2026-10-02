@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { alpha, blue, green, packRgba, parseHex, red, toHex } from './color.ts';
+import { alpha, blue, colorDistance, green, packRgba, parseHex, red, toHex } from './color.ts';
+
+describe('colorDistance', () => {
+  it('is zero for equal colors and orders by similarity', () => {
+    expect(colorDistance(0xff0000ff, 0xff0000ff)).toBe(0);
+    expect(colorDistance(0xff0000ff, 0xee1111ff)).toBeLessThan(colorDistance(0xff0000ff, 0x0000ffff));
+    expect(colorDistance(0x000000ff, 0x000000ff - 0x80)).toBeGreaterThan(0);
+  });
+
+  it('weights green differences most, as the eye does', () => {
+    expect(colorDistance(0x000000ff, 0x004000ff)).toBeGreaterThan(colorDistance(0x000000ff, 0x000040ff));
+  });
+});
 
 describe('packRgba', () => {
   it('packs channels as 0xRRGGBBAA and reads them back', () => {

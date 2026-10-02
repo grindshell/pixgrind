@@ -1,4 +1,4 @@
-import { parseHex, type Rgba } from './color.ts';
+import { packRgba, parseHex, type Rgba } from './color.ts';
 
 /** Pixel index reserved for transparency. It never maps to a palette color. */
 export const TRANSPARENT = 0;
@@ -23,6 +23,10 @@ export function clonePalette(palette: Palette): Palette {
   return createPalette(palette.name, palette.colors);
 }
 
+export function palettesEqual(a: Palette, b: Palette): boolean {
+  return a.name === b.name && a.colors.length === b.colors.length && a.colors.every((color, i) => color === b.colors[i]);
+}
+
 /**
  * The color a pixel index renders as. Index 0, and any index past the end of
  * the palette, is fully transparent.
@@ -41,3 +45,17 @@ export const DEFAULT_PALETTE: Palette = createPalette(
     '#29adff', '#83769c', '#ff77a8', '#ffccaa',
   ].map(parseHex),
 );
+
+/** Read-only presets offered alongside the user's saved palettes. */
+export const BUILTIN_PALETTES: readonly Palette[] = [
+  DEFAULT_PALETTE,
+  createPalette('Game Boy', ['#0f380f', '#306230', '#8bac0f', '#9bbc0f'].map(parseHex)),
+  createPalette('1-bit', ['#000000', '#ffffff'].map(parseHex)),
+  createPalette(
+    'Grayscale 8',
+    Array.from({ length: 8 }, (_, i) => {
+      const level = Math.round((i * 255) / 7);
+      return packRgba(level, level, level);
+    }),
+  ),
+];

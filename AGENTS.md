@@ -40,15 +40,24 @@ Built so far:
   - With the Move tool, the arrow keys nudge 1px, or 10px with Shift.
   - Painting and fill are clipped to the selection.
   - Selection changes and moves are undoable.
-- Palette panel showing the default PICO-8 palette; click to select a color.
+- Palette panel: swatches (click to select the primary color, + to add), and
+  for the selected color a picker with live preview, a hex field, and delete
+  (unused colors only).
+- Palettes panel:
+  - Built-in presets (PICO-8, Game Boy, 1-bit, Grayscale 8) plus palettes
+    saved in `localStorage`.
+  - Load a palette by swap (keep indices) or remap (nearest colors).
+  - Save, delete saved (two-click confirm).
+  - Import/export `.hex`, `.gpl`, `.pal` and PNG swatches.
+- All palette changes are undoable; the library itself is not.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y.
 - Layers panel: thumbnails, select, show/hide, rename (double-click), add,
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 
-Not built yet, roughly in priority order: palette management and swap, image
-import/export, reference images, project files.
+Not built yet, roughly in priority order: image import/export, reference
+images, project files.
 Follow-ups:
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
@@ -61,6 +70,11 @@ Follow-ups:
   - Non-rectangular selections (lasso, magic wand) and copy/paste.
   - Animated marching ants.
   - Dragging inside a selection with the marquee to move only the outline.
+- Palettes:
+  - Reorder colors by dragging.
+  - A "replace color" remap (move all pixels from one index to another).
+  - Alpha editing in the color editor (the native picker is RGB only; alpha
+    can be typed as `#rrggbbaa`).
 
 ## Git
 
@@ -118,21 +132,28 @@ src/
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
                  composite (+ visibleIndexAt), raster (line, rect, shape
                  constraints), rect (Rect geometry), floodFill, edits
-                 (undoable changes), layerEdits and selection (edit
-                 constructors), history
+                 (undoable changes), layerEdits / selection / paletteEdits
+                 (edit constructors), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
-  io/            (not created yet) import/export: images, palette files,
-                 project files
+  io/            import/export and persistence: paletteFormats (pure text
+                 parsers/serializers), paletteLibrary (saved palettes over a
+                 storage interface), paletteImage (PNG swatches, DOM), files
+                 (download, file picker, file names)
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
-                 keyboard shortcuts, history controls, palette panel, layers
-                 panel, DOM helpers (dom.ts) and inline SVG icons (icons.ts)
+                 keyboard shortcuts, history controls, palette and palettes
+                 (library) panels, layers panel, DOM helpers (dom.ts) and
+                 inline SVG icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
 ```
 
 - `core/` must not import from `render/`, `ui/`, or `io/`, and must not touch
   `document`/`window`, so it can be unit-tested in Node. `render/viewport.ts`
   is also pure and tested.
+- In `io/`, keep format parsing/serializing pure (string or bytes in, data
+  out) and in separate modules from the DOM parts (file pickers, canvas
+  encode/decode), so formats are unit-tested in Node. Persistence takes its
+  storage as a parameter (`KeyValueStorage`) for the same reason.
 - Dependency direction: `ui` → `render` / `io` → `core`.
 - Tests live next to the code as `*.test.ts` and import from `vitest`
   explicitly (no globals).
@@ -165,16 +186,43 @@ storage without updating this section and the palette-swap design.
 ### Palettes
 
 - A palette is `{ name, colors }`. A document owns its own copy
-  (`createDocument` clones the palette passed in).
-- **Palette swap** = replace the active palette with another, mapping index to
-  index. If the new palette is shorter, indices with no color need a defined
-  fallback (e.g. nearest color in the new palette); never silently corrupt data.
-- **Color remap** (change which index pixels use) is a separate operation that
-  rewrites pixel data and goes through undo history.
-- Saved palettes persist in the browser (IndexedDB or localStorage, behind an
-  interface in `io/` so storage can change).
-- Palette file formats to support: `.hex` (Lospec), `.gpl` (GIMP), `.pal`
-  (JASC-PAL), and PNG swatch images.
+  (`createDocument` clones the palette passed in). It must keep at least one
+  color.
+- Palette changes are `palette` edits holding whole before/after snapshots
+  (palettes are tiny). `applyEdit` clones on apply, because live previews
+  (`Editor.previewPaletteColor`) mutate `doc.palette` in place and must never
+  reach a snapshot in history. Constructors live in `core/paletteEdits.ts`.
+- **Palette swap** (`swapPaletteEdit`): switch palettes keeping every pixel's
+  index, so the image is recolored without touching pixel data.
+  - Used indices the new palette lacks are remapped to the nearest new color,
+    in the same undoable batch.
+  - Indices that already had no color become transparent, so nothing new
+    appears.
+  - This is the "palette swap" feature.
+- **Remap** (`remapToPaletteEdit`): every pixel moves to the nearest-looking
+  new color (`colorDistance`, redmean-weighted RGB plus alpha). Use it when
+  palettes are ordered differently.
+- Deleting a color is only allowed when no pixel uses it (`canRemoveColor`
+  gives the reason otherwise), so nothing is recolored silently. Later colors
+  shift down an index and pixels using them are renumbered on every layer.
+- The editor clamps `primaryIndex` into the palette after every document
+  change.
+- Saved palettes: `io/paletteLibrary.ts` defines an async `PaletteLibrary`
+  interface. Today it's backed by `localStorage`, stored as JSON of hex
+  strings under `pixgrind.palettes.v1`.
+  - Saving replaces a saved palette with the same name.
+  - Unreadable or malformed data reads as empty instead of breaking the app.
+  - If storage is blocked, an in-memory fallback is used and the panel says
+    saves won't persist.
+  - The library is outside undo history, which is why deleting needs a second
+    click.
+- File formats (`io/paletteFormats.ts`):
+  - `.hex` (Lospec), `.gpl` (GIMP) and `.pal` (JASC) are RGB only, so alpha is
+    dropped on export, with a warning.
+  - PNG swatches (`io/paletteImage.ts`) export one pixel per color (Lospec 1x)
+    and keep alpha. On import they read any image's distinct visible colors
+    in reading order.
+  - More than 255 colors is an error, never a silent truncation.
 
 ### Layers
 
@@ -272,6 +320,7 @@ storage without updating this section and the palette-swap design.
   changes, and `applyEdit(doc, edit, 'undo' | 'redo')`. Current kinds:
   - `pixels`
   - `layer-add`, `layer-remove`, `layer-move`, `layer-props` (name, opacity)
+  - `palette`
   - `selection`
   - `batch`, which is all-or-nothing: it rolls back if any part fails.
     `combineEdits(label, edits)` builds one, or returns the single edit or
@@ -351,6 +400,11 @@ storage without updating this section and the palette-swap design.
 - A page loaded while the pane is hidden may fit the view to a tiny stage
   (zoom 1). Compute coordinates from `pixgrind.viewport` rather than assuming
   a zoom level.
+- Don't trigger real downloads or file pickers from automation. Check
+  exports by calling the encoders directly (e.g.
+  `await import('/src/io/paletteImage.ts')` and round-trip `paletteToPng`
+  through `paletteFromImageFile`). Text formats are covered by unit tests.
+  Remove any test data saved to `localStorage` afterwards.
 
 ## Conventions
 
