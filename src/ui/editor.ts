@@ -51,6 +51,8 @@ export class Editor {
   secondaryIndex = TRANSPARENT;
   /** Size and shape for the brush tools, shared by all of them. Change via `setBrush`. */
   brush: Brush = { ...DEFAULT_BRUSH };
+  /** Pixel-perfect freehand strokes: drop the corners of L-shaped turns. Only with a 1px brush. */
+  pixelPerfect = false;
   /** Document pixel under the pointer, or null when it's off the canvas. Drives the brush outline. */
   pointer: Point | null = null;
   /** Tracing guide shown with the artwork; never part of the document. Change via `setReference`/`updateReference`. */
@@ -144,6 +146,12 @@ export class Editor {
     if (brush.size === this.brush.size && brush.shape === this.brush.shape) return;
     this.brush = brush;
     this.requestRender();
+    this.notify();
+  }
+
+  setPixelPerfect(on: boolean): void {
+    if (this.pixelPerfect === on) return;
+    this.pixelPerfect = on;
     this.notify();
   }
 

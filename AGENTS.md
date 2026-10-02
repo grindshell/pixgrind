@@ -38,7 +38,8 @@ Built so far:
   - Middle-drag pans and the wheel zooms around the cursor.
 - Brush panel: size 1–64 and round/square shape, shared by Pencil, Eraser,
   Line and both Rectangles. `[` / `]` step the size. The canvas outlines
-  the brush under the pointer.
+  the brush under the pointer. A "Pixel perfect" option (1px only) makes
+  Pencil and Eraser drop the corners of L-shaped turns.
 - Selection:
   - Rectangle marquee. Ctrl+A selects all; Ctrl+D or Escape deselects.
   - Delete/Backspace clears the selected pixels.
@@ -92,7 +93,6 @@ Follow-ups:
 - Tools:
   - Shape previews that react to Shift being pressed without moving the
     pointer.
-  - Pixel-perfect freehand strokes (no L-shaped corners).
 - Selection:
   - A floating selection that keeps pixels moved off-canvas until it is
     committed (today they are dropped on release).
@@ -161,7 +161,8 @@ src/
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
                  composite (+ visibleIndexAt), raster (line, rect, shape
                  constraints), brush (footprints, brush lines and
-                 rectangles), rect (Rect geometry), floodFill, image (RGBA
+                 rectangles), pixelPerfect (L-corner removal for 1px
+                 strokes), rect (Rect geometry), floodFill, image (RGBA
                  ↔ indices, upscale, flatten), edits (undoable changes),
                  layerEdits / selection / paletteEdits / documentEdits (edit
                  constructors), history
@@ -365,6 +366,15 @@ storage without updating this section and the palette-swap design.
   `end` with `editor.endStroke()`:
   - Freehand tools (pencil, eraser) drag the brush between consecutive
     positions with `brushLine` so fast strokes have no gaps.
+  - Pixel perfect (`Editor.pixelPerfect`, used only with a 1px brush)
+    feeds each stroke pixel to a `pixelPerfectPath` (`core/pixelPerfect.ts`).
+    - When the last three points make an L, the corner is dropped and put
+      back with `PixelEditSession.restore`, live as the stroke goes.
+    - The check runs on the kept path, so a staircase of orthogonal steps
+      becomes a clean diagonal.
+    - A corner the stroke also crosses elsewhere stays painted.
+    - Bresenham segments never contain an L themselves; corners only appear
+      where segments join.
   - Shape tools (line, rect) call `session.revert()` and redraw on every
     move. The preview lives in the layer, needs no overlay, and the final
     shape is one undo entry.

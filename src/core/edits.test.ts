@@ -68,6 +68,21 @@ describe('beginPixelEdit', () => {
     expect(Array.from(edit!.before)).toEqual([0]);
   });
 
+  it('restore() puts back one pixel and leaves it out of the edit', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const [layer] = doc.layers;
+    const session = beginPixelEdit(doc, layer, 'Pencil');
+    session.setPixel(0, 0, 2);
+    session.setPixel(1, 0, 2);
+    expect(session.restore(0, 0)).toBe(true);
+    expect(getPixel(doc, layer, 0, 0)).toBe(1);
+    // Untouched or out-of-bounds pixels have nothing to restore.
+    expect(session.restore(3, 3)).toBe(false);
+    expect(session.restore(-1, 0)).toBe(false);
+    const edit = session.finish();
+    expect(Array.from(edit!.offsets)).toEqual([1]);
+  });
+
   it('ignores writes outside the clip rectangle', () => {
     const doc = createDocument(4, 4, palette);
     const [layer] = doc.layers;

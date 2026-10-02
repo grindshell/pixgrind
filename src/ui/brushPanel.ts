@@ -1,5 +1,5 @@
 import { MAX_BRUSH_SIZE, MIN_BRUSH_SIZE, type BrushShape } from '../core/brush.ts';
-import { el, iconButton, slider } from './dom.ts';
+import { checkbox, el, iconButton, slider } from './dom.ts';
 import type { Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
@@ -29,14 +29,25 @@ export function createBrushPanel(editor: Editor): HTMLElement {
   const size = slider('Size', MIN_BRUSH_SIZE, MAX_BRUSH_SIZE, (value) => editor.setBrush({ size: value }));
   size.row.title = 'Brush size. [ and ] step it down and up.';
 
+  const pixelPerfect = checkbox('Pixel perfect', (checked) => editor.setPixelPerfect(checked));
+  const options = el('div', 'checkbox-row');
+  options.append(pixelPerfect.label);
+
   const render = () => {
     const { brush } = editor;
     for (const { shape, button } of shapeButtons) button.setAttribute('aria-pressed', String(shape === brush.shape));
     size.set(brush.size, `${brush.size} px`);
+    pixelPerfect.input.checked = editor.pixelPerfect;
+    // Keeps its setting at other sizes, so it's back on returning to 1px.
+    pixelPerfect.input.disabled = brush.size !== 1;
+    pixelPerfect.label.title =
+      brush.size === 1
+        ? 'Pencil and eraser drop the corner pixel of L-shaped turns, for clean 1px lines'
+        : 'Pixel perfect works with 1px brushes only';
   };
 
   editor.onChange(render);
   render();
-  panel.append(header, size.row);
+  panel.append(header, size.row, options);
   return panel;
 }

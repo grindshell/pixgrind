@@ -3,8 +3,9 @@ import { visibleIndexAt } from '../core/composite.ts';
 import { combineEdits, type PixelEditSession } from '../core/edits.ts';
 import { floodRegion } from '../core/floodFill.ts';
 import { TRANSPARENT } from '../core/palette.ts';
+import { pixelPerfectPath } from '../core/pixelPerfect.ts';
 import { documentRect } from '../core/pixelDocument.ts';
-import { snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
+import { plotLine, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { clipRect, rectFromCorners, translateRect } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
 import { movedPixels, selectionChange } from '../core/selection.ts';
@@ -61,16 +62,31 @@ export interface Tool {
   wheel?(editor: Editor, input: ToolInput, direction: 1 | -1): void;
 }
 
-/** Freehand drawing; consecutive pointer positions are joined with lines so fast strokes have no gaps. */
+/**
+ * Freehand drawing; consecutive pointer positions are joined with lines so
+ * fast strokes have no gaps. In pixel-perfect mode (1px brush only), the
+ * corners of L-shaped turns are taken back as the stroke goes.
+ */
 function freehand(editor: Editor, start: ToolInput, index: number, label: string): ToolGesture {
   const session = editor.beginStroke(label);
   const mask = brushMask(editor.brush);
+  const perfect = editor.pixelPerfect && editor.brush.size === 1 ? pixelPerfectPath() : null;
   let last: Point = start;
-  paintLine(session, mask, start, start, index);
+  const paintTo = (to: Point): boolean => {
+    if (!perfect) return paintLine(session, mask, last, to, index);
+    let changed = false;
+    plotLine(last.x, last.y, to.x, to.y, (x, y) => {
+      changed = session.setPixel(x, y, index) || changed;
+      const corner = perfect.add({ x, y });
+      if (corner) changed = session.restore(corner.x, corner.y) || changed;
+    });
+    return changed;
+  };
+  paintTo(start);
   editor.requestRender();
   return {
     move(input) {
-      if (paintLine(session, mask, last, input, index)) editor.requestRender();
+      if (paintTo(input)) editor.requestRender();
       last = input;
     },
     end: () => editor.endStroke(),

@@ -294,6 +294,11 @@ export interface PixelEditSession {
   setPixel(x: number, y: number, index: number): boolean;
   /** Restores every pixel written so far to its original value. Used to redraw shape previews. */
   revert(): void;
+  /**
+   * Puts one pixel back to its value before the session (e.g. a corner a
+   * pixel-perfect stroke takes back). Returns whether the pixel changed.
+   */
+  restore(x: number, y: number): boolean;
   /** Ends the session. Returns null when no pixel ended up different from its original value. */
   finish(): PixelEdit | null;
 }
@@ -320,6 +325,18 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
       if (finished) throw new Error('Pixel edit session already finished');
       for (const [offset, value] of original) layer.pixels[offset] = value;
       original.clear();
+    },
+
+    restore(x, y) {
+      if (finished) throw new Error('Pixel edit session already finished');
+      if (!inBounds(doc, x, y)) return false;
+      const offset = y * doc.width + x;
+      const value = original.get(offset);
+      if (value === undefined) return false;
+      original.delete(offset);
+      if (layer.pixels[offset] === value) return false;
+      layer.pixels[offset] = value;
+      return true;
     },
 
     finish() {

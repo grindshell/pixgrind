@@ -8,7 +8,7 @@ import {
 import { chooseFile, fileBaseName } from '../io/files.ts';
 import type { ProjectReference } from '../io/projectFile.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
-import { checkbox, el, fieldRow, slider, textButton } from './dom.ts';
+import { checkbox, el, fieldRow, iconButton, slider, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
 import type { ToolId } from './tools.ts';
 
@@ -78,7 +78,7 @@ export function createReferencePanel(editor: Editor): HTMLElement {
         ),
     );
   });
-  const removeButton = textButton('Remove', () => {
+  const removeButton = iconButton('trash', 'Remove the reference', () => {
     editor.setReference(null);
     status.textContent = '';
   });
@@ -153,7 +153,7 @@ export function createReferencePanel(editor: Editor): HTMLElement {
   render();
   panel.append(
     heading,
-    fieldRow(loadButton, removeButton, moveButton),
+    fieldRow(loadButton, moveButton, removeButton),
     info,
     toggles,
     opacity.row,
