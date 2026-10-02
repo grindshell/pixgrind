@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compositeRgba } from './composite.ts';
-import { applyEdit, type Edit } from './edits.ts';
+import { applyEdit, followIndex, type Edit } from './edits.ts';
 import { History } from './history.ts';
 import { createLayer } from './layer.ts';
 import { createPalette, MAX_PALETTE_COLORS, type Palette } from './palette.ts';
@@ -122,6 +122,28 @@ describe('removing colors', () => {
   it('refuses to remove a used color', () => {
     const doc = docWith([RED, GREEN], [2, 0, 0, 0]);
     expect(() => removeColorEdit(doc, 2)).toThrow(/Used by 1 pixel$/);
+  });
+});
+
+describe('followIndex', () => {
+  it('moves indices with a color deletion and back on undo', () => {
+    // Colors 1–4; delete 2 (unused). 3 → 2, 4 → 3; 1 and transparent stay.
+    const doc = docWith([RED, GREEN, BLUE, DARK_RED], [1, 3, 4, 0]);
+    const edit = removeColorEdit(doc, 2);
+    if (!edit) throw new Error('expected an edit');
+    expect([0, 1, 3, 4].map((i) => followIndex(edit, i, 'redo'))).toEqual([0, 1, 2, 3]);
+    expect([0, 1, 2, 3].map((i) => followIndex(edit, i, 'undo'))).toEqual([0, 1, 3, 4]);
+    // An index on the deleted color moves to its neighbor, which is where undo sends it back from.
+    expect(followIndex(edit, 2, 'redo')).toBe(2);
+  });
+
+  it('leaves indices alone for edits that keep them', () => {
+    const doc = docWith([RED, GREEN], [1, 2, 0, 0]);
+    const edits = [setColorEdit(doc, 1, BLUE), addColorEdit(doc, BLUE), swapPaletteEdit(doc, createPalette('x', [BLUE]))];
+    for (const edit of edits) {
+      if (!edit) throw new Error('expected an edit');
+      expect([0, 1, 2].map((i) => followIndex(edit, i, 'redo'))).toEqual([0, 1, 2]);
+    }
   });
 });
 

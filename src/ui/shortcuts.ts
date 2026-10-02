@@ -67,6 +67,12 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       return;
     }
 
+    if (e.key === 'x') {
+      e.preventDefault();
+      editor.swapColors();
+      return;
+    }
+
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();
       editor.setBrush({ size: stepBrushSize(editor.brush.size, e.key === ']' ? 1 : -1) });

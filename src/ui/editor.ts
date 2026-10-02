@@ -1,8 +1,17 @@
 import { brushMask, clampBrushSize, DEFAULT_BRUSH, type Brush } from '../core/brush.ts';
 import type { Rgba } from '../core/color.ts';
-import { applyEdit, beginPixelEdit, type Edit, type PixelEdit, type PixelEditSession } from '../core/edits.ts';
+import {
+  applyEdit,
+  beginPixelEdit,
+  followIndex,
+  type Edit,
+  type EditDirection,
+  type PixelEdit,
+  type PixelEditSession,
+} from '../core/edits.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
+import { TRANSPARENT } from '../core/palette.ts';
 import { findLayer, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
 import type { Rect } from '../core/rect.ts';
@@ -22,6 +31,9 @@ import { attachShortcuts } from './shortcuts.ts';
 import { createToolbar } from './toolbar.ts';
 import { getTool, type ToolId } from './tools.ts';
 
+/** The two paint colors: the left mouse button uses the primary, the right the secondary. */
+export type ColorSlot = 'primary' | 'secondary';
+
 /**
  * Editor session state: the document plus everything about how it is being
  * edited. All document changes from the UI go through this class so they
@@ -33,8 +45,10 @@ export class Editor {
   readonly history = new History();
   viewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
   tool: ToolId = 'pencil';
-  /** Palette index the primary (left) button paints with. */
+  /** Palette index the left button paints with; `TRANSPARENT` erases. Change via `setColorIndex`. */
   primaryIndex = 1;
+  /** Palette index the right button paints with. Transparent by default, so right-click erases. */
+  secondaryIndex = TRANSPARENT;
   /** Size and shape for the brush tools, shared by all of them. Change via `setBrush`. */
   brush: Brush = { ...DEFAULT_BRUSH };
   /** Document pixel under the pointer, or null when it's off the canvas. Drives the brush outline. */
@@ -97,8 +111,23 @@ export class Editor {
     this.notify();
   }
 
-  setPrimaryIndex(index: number): void {
-    this.primaryIndex = index;
+  colorIndex(slot: ColorSlot): number {
+    return slot === 'primary' ? this.primaryIndex : this.secondaryIndex;
+  }
+
+  /** Sets the palette index a button paints with: 1–n for a palette color, `TRANSPARENT` to erase. */
+  setColorIndex(slot: ColorSlot, index: number): void {
+    if (!Number.isInteger(index) || index < TRANSPARENT || index > this.doc.palette.colors.length) {
+      throw new RangeError(`No palette color ${index}`);
+    }
+    if (slot === 'primary') this.primaryIndex = index;
+    else this.secondaryIndex = index;
+    this.notify();
+  }
+
+  /** Exchanges the primary and secondary colors. */
+  swapColors(): void {
+    [this.primaryIndex, this.secondaryIndex] = [this.secondaryIndex, this.primaryIndex];
     this.notify();
   }
 
@@ -155,7 +184,7 @@ export class Editor {
     if (!edit || this.busy) return false;
     applyEdit(this.doc, edit, 'redo');
     this.history.push(edit);
-    this.documentChanged();
+    this.documentChanged(edit, 'redo');
     return true;
   }
 
@@ -230,7 +259,7 @@ export class Editor {
   record(edit: Edit | null): void {
     if (!edit) return;
     this.history.push(edit);
-    this.documentChanged();
+    this.documentChanged(edit, 'redo');
   }
 
   /** Whether a pointer gesture or stroke is in progress; undo/redo and `perform` wait until it ends. */
@@ -245,13 +274,15 @@ export class Editor {
 
   undo(): void {
     // Undoing underneath an in-progress gesture would interleave the two edits.
-    if (this.busy || !this.history.undo(this.doc)) return;
-    this.documentChanged();
+    if (this.busy) return;
+    const edit = this.history.undo(this.doc);
+    if (edit) this.documentChanged(edit, 'undo');
   }
 
   redo(): void {
-    if (this.busy || !this.history.redo(this.doc)) return;
-    this.documentChanged();
+    if (this.busy) return;
+    const edit = this.history.redo(this.doc);
+    if (edit) this.documentChanged(edit, 'redo');
   }
 
   /** Subscribes to editor state changes (not per-pixel edits). Returns an unsubscribe function. */
@@ -284,15 +315,18 @@ export class Editor {
     this.requestRender();
   }
 
-  private documentChanged(): void {
+  private documentChanged(edit: Edit, direction: EditDirection): void {
     // A different size (e.g. an opened image) needs a fresh view.
     if (this.doc.width !== this.fittedSize.width || this.doc.height !== this.fittedSize.height) {
       this.fittedSize = { width: this.doc.width, height: this.doc.height };
       this.fitToView();
     }
     this.syncActiveLayer();
-    // Keep the selected color valid when the palette shrinks.
-    this.primaryIndex = Math.min(Math.max(1, this.primaryIndex), Math.max(1, this.doc.palette.colors.length));
+    // The paint colors follow their colors when they're renumbered, and stay
+    // valid when the palette shrinks.
+    const last = this.doc.palette.colors.length;
+    this.primaryIndex = Math.min(followIndex(edit, this.primaryIndex, direction), last);
+    this.secondaryIndex = Math.min(followIndex(edit, this.secondaryIndex, direction), last);
     this.requestRender();
     this.notify();
   }

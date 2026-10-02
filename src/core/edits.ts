@@ -98,6 +98,14 @@ export interface PaletteEdit {
   label: string;
   before: Palette;
   after: Palette;
+  /**
+   * Set when colors change index (e.g. a deletion shifts later colors down):
+   * `redo[i]` is where index i goes when the edit is applied, `undo[i]` where
+   * it goes back. Pixels are renumbered by pixel edits batched with this one;
+   * this is for state outside the document that refers to colors by index
+   * (see `followIndex`).
+   */
+  renumber?: { redo: Uint8Array; undo: Uint8Array };
 }
 
 export interface SelectionEdit {
@@ -128,6 +136,24 @@ export type Edit =
   | SelectionEdit
   | DocumentEdit
   | BatchEdit;
+
+/**
+ * Where palette index `index` ends up after applying (`redo`) or reverting
+ * (`undo`) an edit, so editor state like the paint colors keeps pointing at
+ * the same color when colors are renumbered.
+ */
+export function followIndex(edit: Edit, index: number, direction: EditDirection): number {
+  switch (edit.kind) {
+    case 'palette':
+      return edit.renumber ? edit.renumber[direction][index] : index;
+    case 'batch': {
+      const ordered = direction === 'redo' ? edit.edits : [...edit.edits].reverse();
+      return ordered.reduce((current, part) => followIndex(part, current, direction), index);
+    }
+    default:
+      return index;
+  }
+}
 
 /** Groups edits into one history entry: null if none, the edit itself if one, else a batch. */
 export function combineEdits(label: string, edits: ReadonlyArray<Edit | null>): Edit | null {

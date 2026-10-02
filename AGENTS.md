@@ -30,9 +30,11 @@ Built so far:
 - Tools in a vertical strip beside the canvas: Rectangle select (M), Move
   (V), Pencil (B), Eraser (E), Line (L), Rectangle (R), Filled rectangle
   (Shift+R), Fill (G), Eyedropper (I).
-  - The left button uses the primary color and the right button uses
-    transparent.
-  - Alt+click picks a color whatever the tool.
+  - The left button paints the primary color and the right button the
+    secondary color (transparent by default, so right-click erases). X
+    swaps them.
+  - Alt+click picks a color whatever the tool, into the pressed button's
+    color.
   - Middle-drag pans and the wheel zooms around the cursor.
 - Brush panel: size 1–64 and round/square shape, shared by Pencil, Eraser,
   Line and both Rectangles. `[` / `]` step the size. The canvas outlines
@@ -43,9 +45,14 @@ Built so far:
   - With the Move tool, the arrow keys nudge 1px, or 10px with Shift.
   - Painting and fill are clipped to the selection.
   - Selection changes and moves are undoable.
-- Palette panel: swatches (click to select the primary color, + to add), and
-  for the selected color a picker with live preview, a hex field, and delete
-  (unused colors only).
+- Palette panel:
+  - Swatches: click for the primary color, right-click (or the context menu
+    key) for the secondary, + to add.
+  - Primary/secondary wells, a swap button, and a transparent swatch that
+    can be either color.
+  - For the primary color: a picker with live preview, a hex field, and
+    delete (unused colors only). These are disabled when the primary is
+    transparent.
 - Palettes panel:
   - Built-in presets (PICO-8, Game Boy, 1-bit, Grayscale 8) plus palettes
     saved in `localStorage`.
@@ -83,8 +90,6 @@ Follow-ups:
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
 - Tools:
-  - A choosable secondary color (the right button is fixed to
-    transparent).
   - Shape previews that react to Shift being pressed without moving the
     pointer.
   - Pixel-perfect freehand strokes (no L-shaped corners).
@@ -238,8 +243,14 @@ storage without updating this section and the palette-swap design.
 - Deleting a color is only allowed when no pixel uses it (`canRemoveColor`
   gives the reason otherwise), so nothing is recolored silently. Later colors
   shift down an index and pixels using them are renumbered on every layer.
-- The editor clamps `primaryIndex` into the palette after every document
-  change.
+- Paint colors (`Editor.primaryIndex` / `secondaryIndex`, changed through
+  `setColorIndex(slot, index)` and `swapColors`) are palette indices, where
+  0 means transparent. They're editor state: not undoable, not saved.
+  - Edits that renumber colors set `PaletteEdit.renumber` (index maps for
+    redo and undo). After every perform, record, undo and redo, the editor
+    runs both slots through `followIndex`, so they stay on the same colors.
+    Today only deletion renumbers; reordering colors should do the same.
+  - Then both are clamped into the palette.
 - Saved palettes: `io/paletteLibrary.ts` defines an async `PaletteLibrary`
   interface. Today it's backed by `localStorage`, stored as JSON of hex
   strings under `pixgrind.palettes.v1`.
@@ -331,9 +342,11 @@ storage without updating this section and the palette-swap design.
   `ui/canvasInput.ts` turns them into tool gestures in document pixel
   coordinates and only forwards a move when the pixel or Shift state changes.
 - Tools live in `ui/tools.ts`, one `Tool` object each:
-  - `begin(editor, input, index)` returns a `ToolGesture` with `move`/`end`.
-    `index` is the primary color for the left button and `TRANSPARENT` for
-    the right.
+  - `begin(editor, input, index, slot)` returns a `ToolGesture` with
+    `move`/`end`. `slot` is the pressed button's color (`primary` for the
+    left, `secondary` for the right) and `index` its palette index, which
+    may be `TRANSPARENT`. The eraser ignores `index` and always erases; the
+    eyedropper picks into `slot`.
   - `paints: true` tools are blocked while the active layer is hidden.
   - `shortcut` is matched case-sensitively against `KeyboardEvent.key`, so
     `"R"` means Shift+R.
@@ -380,7 +393,8 @@ storage without updating this section and the palette-swap design.
 - Fill is 4-connected (`core/floodFill.ts`, iterative). 8-connected fills
   leak through diagonal one-pixel outlines.
 - Eyedropper (`visibleIndexAt`) picks the topmost visible color, not the
-  active layer's, and ignores transparent pixels.
+  active layer's, and ignores transparent pixels (so a stray click on empty
+  canvas doesn't turn a color into an eraser; use the transparent swatch).
 
 ### Selection
 

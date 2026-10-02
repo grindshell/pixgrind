@@ -8,7 +8,7 @@ import { snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { clipRect, rectFromCorners, translateRect } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
 import { movedPixels, selectionChange } from '../core/selection.ts';
-import type { Editor } from './editor.ts';
+import type { ColorSlot, Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
 export type ToolId =
@@ -52,10 +52,11 @@ export interface Tool {
   /** Receive every pointer move, not just moves to a new pixel. */
   continuous?: boolean;
   /**
-   * Starts a gesture. `index` is the palette index for the pressed button:
-   * the primary color for the left button, transparent for the right.
+   * Starts a gesture. `slot` is the pressed button's color (primary for the
+   * left button, secondary for the right) and `index` its palette index,
+   * which may be `TRANSPARENT`.
    */
-  begin(editor: Editor, input: ToolInput, index: number): ToolGesture;
+  begin(editor: Editor, input: ToolInput, index: number, slot: ColorSlot): ToolGesture;
   /** Handles the mouse wheel instead of zooming (Ctrl+wheel still zooms). */
   wheel?(editor: Editor, input: ToolInput, direction: 1 | -1): void;
 }
@@ -173,17 +174,20 @@ const fill: Tool = {
   },
 };
 
-/** Picks the visible color under the pointer as the primary color. Ignores transparent pixels. */
+/**
+ * Picks the visible color under the pointer as the pressed button's color
+ * (primary for left, secondary for right). Ignores transparent pixels.
+ */
 const eyedropper: Tool = {
   id: 'eyedropper',
   label: 'Eyedropper',
   icon: 'eyedropper',
   shortcut: 'i',
   paints: false,
-  begin(editor, start) {
+  begin(editor, start, _index, slot) {
     const pick = (input: ToolInput) => {
       const index = visibleIndexAt(editor.doc, input.x, input.y);
-      if (index !== TRANSPARENT && index !== editor.primaryIndex) editor.setPrimaryIndex(index);
+      if (index !== TRANSPARENT && index !== editor.colorIndex(slot)) editor.setColorIndex(slot, index);
     };
     pick(start);
     return { move: pick, end() {} };

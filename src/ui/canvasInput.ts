@@ -1,6 +1,5 @@
-import { TRANSPARENT } from '../core/palette.ts';
 import { screenToDocument, stepZoom, zoomAt } from '../render/viewport.ts';
-import type { Editor } from './editor.ts';
+import type { ColorSlot, Editor } from './editor.ts';
 import { getTool, type Tool, type ToolGesture, type ToolInput } from './tools.ts';
 
 const BUTTON_PRIMARY = 0;
@@ -13,7 +12,7 @@ type Gesture =
 
 /**
  * Pointer handling for the stage canvas. Left button uses the current tool
- * with the primary color, right button with transparent (erase). Alt+click
+ * with the primary color, right button with the secondary color. Alt+click
  * picks a color whatever the tool. Middle-drag pans. The wheel zooms, unless
  * the current tool handles it (Ctrl+wheel always zooms).
  */
@@ -45,9 +44,10 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       // Painting on a hidden layer would change pixels the user can't see.
       if (tool.paints && !editor.activeLayer.visible) return;
       const input = toolInput(e);
-      const index = e.button === BUTTON_SECONDARY ? TRANSPARENT : editor.primaryIndex;
+      const slot: ColorSlot = e.button === BUTTON_SECONDARY ? 'secondary' : 'primary';
       editor.setGestureActive(true);
-      gesture = { kind: 'tool', pointerId: e.pointerId, tool, gesture: tool.begin(editor, input, index), last: input };
+      const toolGesture = tool.begin(editor, input, editor.colorIndex(slot), slot);
+      gesture = { kind: 'tool', pointerId: e.pointerId, tool, gesture: toolGesture, last: input };
     } else {
       return;
     }

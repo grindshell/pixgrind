@@ -90,11 +90,13 @@ export function removeColorEdit(doc: PixelDocument, index: number): Edit | null 
   const label = 'Delete color';
   const mapping = identityMapping();
   for (let i = index + 1; i < 256; i++) mapping[i] = i - 1;
+  // Reverting shifts them back up. (Index 255 can't be in use after a deletion.)
+  const restore = identityMapping();
+  for (let i = index; i < 255; i++) restore[i] = i + 1;
   const colors = doc.palette.colors.filter((_, i) => i !== index - 1);
-  return combineEdits(label, [
-    paletteEdit(doc, createPalette(doc.palette.name, colors), label),
-    ...remapPixels(doc, mapping, label),
-  ]);
+  const palette = paletteEdit(doc, createPalette(doc.palette.name, colors), label);
+  if (palette) palette.renumber = { redo: mapping, undo: restore };
+  return combineEdits(label, [palette, ...remapPixels(doc, mapping, label)]);
 }
 
 /**
