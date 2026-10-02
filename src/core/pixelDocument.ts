@@ -50,7 +50,8 @@ export interface FloatingPixels extends Mask {
   under: Uint8Array;
 }
 
-export function createDocument(width: number, height: number, palette: Palette, name = 'Untitled'): PixelDocument {
+/** Throws a RangeError unless a document can be `width`×`height`. */
+export function checkDocumentSize(width: number, height: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
     throw new RangeError(`Invalid document size ${width}×${height}`);
   }
@@ -59,6 +60,10 @@ export function createDocument(width: number, height: number, palette: Palette, 
       `${width}×${height} is too large; documents can be at most ${MAX_DOCUMENT_SIZE}×${MAX_DOCUMENT_SIZE}`,
     );
   }
+}
+
+export function createDocument(width: number, height: number, palette: Palette, name = 'Untitled'): PixelDocument {
+  checkDocumentSize(width, height);
   return {
     name,
     width,

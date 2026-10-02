@@ -399,7 +399,11 @@ const polygonLasso: Tool = {
   begin(editor, start) {
     const pending = polygons.get(editor);
     let at = start;
+    // Keys (Enter, Escape, another tool) can finish or drop the polygon while
+    // the button is down. The press is then void.
+    const abandoned = () => editor.tool !== 'polygon' || polygons.get(editor) !== pending;
     const show = (input: ToolInput) => {
+      if (abandoned()) return;
       if (pending) showPolygon(editor, pending, input);
       else editor.previewLasso([{ x: input.x, y: input.y }]);
     };
@@ -410,6 +414,10 @@ const polygonLasso: Tool = {
         show(input);
       },
       end() {
+        if (abandoned()) {
+          editor.previewLasso(null);
+          return;
+        }
         if (!pending) {
           polygons.set(editor, { corners: [{ x: at.x, y: at.y }], start });
         } else if (closesPolygon(editor, pending, at)) {

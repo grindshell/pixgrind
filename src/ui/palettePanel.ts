@@ -28,8 +28,7 @@ export function createPalettePanel(editor: Editor): HTMLElement {
   const swatches = el('div', 'swatches');
   swatches.setAttribute('role', 'group');
   const addButton = iconButton('plus', 'Add color', () => {
-    editor.perform(addColorEdit(doc, selectedColor()));
-    editor.setColorIndex('primary', doc.palette.colors.length);
+    if (editor.perform(addColorEdit(doc, selectedColor()))) editor.setColorIndex('primary', doc.palette.colors.length);
   });
   addButton.classList.add('swatch', 'swatch-add');
 

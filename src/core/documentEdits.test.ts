@@ -79,6 +79,17 @@ describe('openImageEdit', () => {
     expect(() => openImageEdit(doc, huge, 'x', 'palette')).toThrow(/too large/);
   });
 
+  it('reports a large many-colored image as too large, not as having too many colors', () => {
+    const doc = existingDoc();
+    const width = MAX_DOCUMENT_SIZE + 1;
+    const photo: RgbaImage = {
+      width,
+      height: 1,
+      data: new Uint8ClampedArray(Array.from({ length: width }, (_, i) => [i % 256, i >> 8, 0, 255]).flat()),
+    };
+    expect(() => openImageEdit(doc, photo, 'x', 'image')).toThrow(/too large/);
+  });
+
   it('refuses to apply a document state whose layers do not match its size', () => {
     const doc = existingDoc();
     const edit: DocumentEdit = openImageEdit(doc, imageFrom(['rg']), 'x', 'image');

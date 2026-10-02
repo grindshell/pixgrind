@@ -71,9 +71,19 @@ export function option(value: string, label: string): HTMLOptionElement {
   return opt;
 }
 
+/** Input types that don't edit text, so shortcuts still work while they have focus. */
+const NON_TEXT_INPUTS = new Set(['button', 'checkbox', 'color', 'file', 'image', 'radio', 'range', 'reset', 'submit']);
+
 /** Whether an event target edits text, so keyboard shortcuts and clipboard commands should leave it alone. */
 export function isTextEntry(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'));
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable || target instanceof HTMLTextAreaElement) return true;
+  return target instanceof HTMLInputElement && !NON_TEXT_INPUTS.has(target.type);
+}
+
+/** Whether a focused control uses the arrow keys itself (sliders, radio buttons). */
+export function usesArrowKeys(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement && (target.type === 'range' || target.type === 'radio');
 }
 
 export function setButtonLabel(button: HTMLButtonElement, label: string): void {

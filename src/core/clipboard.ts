@@ -67,6 +67,25 @@ export function clipImage(clip: PixelClip): RgbaImage {
 }
 
 /**
+ * Whether `image` is the clip after a trip through the system clipboard as
+ * PNG: the same size and alpha, and colors equal up to the rounding that
+ * browsers' premultiplied canvases add to translucent pixels.
+ */
+export function clipMatchesImage(clip: PixelClip, image: RgbaImage): boolean {
+  const own = clipImage(clip);
+  if (own.width !== image.width || own.height !== image.height) return false;
+  for (let o = 0; o < own.data.length; o += 4) {
+    const a = own.data[o + 3];
+    if (image.data[o + 3] !== a) return false;
+    if (a === 0) continue;
+    // Each premultiplied round trip can be off by about 255 / alpha; encoding and decoding make two.
+    const tolerance = a === 255 ? 0 : Math.ceil(510 / a);
+    for (let c = 0; c < 3; c++) if (Math.abs(image.data[o + c] - own.data[o + c]) > tolerance) return false;
+  }
+  return true;
+}
+
+/**
  * The clip's indices for `palette`: kept where the palette still has the
  * same color at that index, else the nearest color. Transparent stays
  * transparent, as do indices that had no color when copied.

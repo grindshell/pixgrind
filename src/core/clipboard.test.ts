@@ -3,6 +3,7 @@ import {
   clipFromImage,
   clipImage,
   clipIndices,
+  clipMatchesImage,
   copyPixels,
   cutEdit,
   pasteEdit,
@@ -155,6 +156,27 @@ describe('clip images', () => {
     const back = clipFromImage(image, doc);
     expect(Array.from(back.pixels)).toEqual([2, 0]);
     expect(back.rect).toEqual({ x: 1, y: 0, width: 2, height: 1 });
+  });
+
+  it('matches its own image after a lossy round trip, but not other images', () => {
+    const HALF_RED = 0xff000080;
+    const clip: PixelClip = {
+      rect: { x: 0, y: 0, width: 3, height: 1 },
+      bits: null,
+      pixels: Uint8Array.of(1, 2, 0),
+      colors: [GREEN, HALF_RED],
+    };
+    const exact = clipImage(clip);
+    expect(clipMatchesImage(clip, exact)).toBe(true);
+    // Premultiplied rounding nudges translucent colors.
+    const rounded = { ...exact, data: Uint8ClampedArray.of(0, 255, 0, 255, 253, 2, 1, 128, 0, 0, 0, 0) };
+    expect(clipMatchesImage(clip, rounded)).toBe(true);
+    // Opaque colors must be exact, and alpha always.
+    const recolored = { ...exact, data: Uint8ClampedArray.of(0, 254, 0, 255, 255, 0, 0, 128, 0, 0, 0, 0) };
+    expect(clipMatchesImage(clip, recolored)).toBe(false);
+    const realpha = { ...exact, data: Uint8ClampedArray.of(0, 255, 0, 255, 255, 0, 0, 127, 0, 0, 0, 0) };
+    expect(clipMatchesImage(clip, realpha)).toBe(false);
+    expect(clipMatchesImage(clip, { width: 1, height: 3, data: exact.data })).toBe(false);
   });
 
   it('refuses images too large to paste', () => {

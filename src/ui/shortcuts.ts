@@ -1,6 +1,6 @@
 import { stepBrushSize } from '../core/brush.ts';
 import { clearSelection, deselect, dropFloating, invertSelection, nudge, selectAll } from './commands.ts';
-import { isTextEntry } from './dom.ts';
+import { isTextEntry, usesArrowKeys } from './dom.ts';
 import type { Editor } from './editor.ts';
 import { getTool, TOOLS } from './tools.ts';
 
@@ -50,6 +50,9 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       return;
     }
 
+    // Drop-downs keep plain keys: arrows and type-to-select.
+    if (e.target instanceof HTMLSelectElement) return;
+
     // The active tool goes first, e.g. Enter and Escape for an unfinished polygon.
     if (getTool(editor.tool).key?.(editor, e.key)) {
       e.preventDefault();
@@ -75,14 +78,18 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
     const arrow = ARROWS[e.key];
     if (arrow) {
       // Arrows nudge only with the Move tool, so they stay free for focused controls otherwise.
-      if (editor.tool !== 'move') return;
+      if (editor.tool !== 'move' || usesArrowKeys(e.target)) return;
       e.preventDefault();
       const step = e.shiftKey ? BIG_NUDGE : 1;
       nudge(editor, arrow[0] * step, arrow[1] * step);
       return;
     }
 
-    if (e.key === 'x') {
+    // Letter shortcuts are case-sensitive ("R" is Shift+R), with the case
+    // from Shift alone so Caps Lock doesn't change their meaning.
+    const letter = e.key.length === 1 ? (e.shiftKey ? e.key.toUpperCase() : e.key.toLowerCase()) : e.key;
+
+    if (letter === 'x') {
       e.preventDefault();
       editor.swapColors();
       return;
@@ -94,8 +101,7 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       return;
     }
 
-    // Tool shortcuts are case-sensitive: "R" is Shift+R.
-    const tool = TOOLS.find((t) => t.shortcut === e.key);
+    const tool = TOOLS.find((t) => t.shortcut === letter);
     if (tool && !e.repeat) {
       e.preventDefault();
       editor.setTool(tool.id);

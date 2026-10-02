@@ -1,4 +1,12 @@
-import { clipFromImage, clipImage, copyPixels, cutEdit, pasteEdit, type PixelClip } from '../core/clipboard.ts';
+import {
+  clipFromImage,
+  clipImage,
+  clipMatchesImage,
+  copyPixels,
+  cutEdit,
+  pasteEdit,
+  type PixelClip,
+} from '../core/clipboard.ts';
 import type { RgbaImage } from '../core/image.ts';
 import { decodeImage, encodeImage } from '../io/imageCodec.ts';
 import { isTextEntry } from './dom.ts';
@@ -16,6 +24,15 @@ import type { Editor } from './editor.ts';
  */
 export function attachClipboard(target: Document, editor: Editor, report: (message: string) => void): void {
   let clip: PixelClip | null = null;
+  /**
+   * True from a copy here until the page loses focus. Until then no other app
+   * can have copied, so an image on the system clipboard is older than `clip`
+   * (writing it failed or hasn't finished) and the copy made here wins.
+   */
+  let clipIsNewest = false;
+  target.defaultView?.addEventListener('blur', () => {
+    clipIsNewest = false;
+  });
   /** Set when a `paste` event arrives, so the Ctrl+V fallback knows not to paste again. */
   let pasteEventSeen = false;
 
@@ -24,6 +41,7 @@ export function attachClipboard(target: Document, editor: Editor, report: (messa
 
   const store = (copied: PixelClip) => {
     clip = copied;
+    clipIsNewest = true;
     writeSystemClipboard(clipImage(copied));
   };
 
@@ -41,9 +59,10 @@ export function attachClipboard(target: Document, editor: Editor, report: (messa
 
   const paste = async (file: File | undefined) => {
     let source = clip;
-    if (file) {
+    if (file && !(clip && clipIsNewest)) {
       const image = await decodeImage(file);
-      if (!clip || !sameImage(image, clipImage(clip))) source = clipFromImage(image, editor.doc);
+      // Our own copy comes back through PNG slightly changed if it has translucent colors.
+      if (!clip || !clipMatchesImage(clip, image)) source = clipFromImage(image, editor.doc);
     }
     if (!source) return;
     const layer = editor.activeLayer;
@@ -113,8 +132,4 @@ function writeSystemClipboard(image: RgbaImage): void {
   } catch {
     // No async clipboard here; copies still work within Pixgrind.
   }
-}
-
-function sameImage(a: RgbaImage, b: RgbaImage): boolean {
-  return a.width === b.width && a.height === b.height && a.data.every((value, i) => value === b.data[i]);
 }

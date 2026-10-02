@@ -3,9 +3,10 @@ import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, type ImageCol
 import { documentImage, flattenImage, upscaleImage } from '../core/image.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
 import { downloadBlob, fileBaseName, formatFileSize, safeFileName } from '../io/files.ts';
-import { decodeImage, encodeImage, IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
+import { checkExportSize, decodeImage, encodeImage, IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
 import { isProjectFile, parseProject, PROJECT_EXTENSION, serializeProject } from '../io/projectFile.ts';
 import type { ReferenceImage } from '../render/referenceImage.ts';
+import { BUSY_MESSAGE } from './commands.ts';
 import type { Editor } from './editor.ts';
 import { referenceFromProject } from './referencePanel.ts';
 
@@ -14,8 +15,6 @@ import { referenceFromProject } from './referencePanel.ts';
  * with a user-readable error. They take files rather than opening pickers,
  * so drag-and-drop and tests can call them directly.
  */
-
-const BUSY = 'Finish drawing first, then try again.';
 
 /** Opens a project file or an image, by file name. */
 export function openFile(editor: Editor, file: File, mode: ImageColorMode): Promise<string> {
@@ -26,7 +25,7 @@ export function openFile(editor: Editor, file: File, mode: ImageColorMode): Prom
 export async function openImageFile(editor: Editor, file: File, mode: ImageColorMode): Promise<string> {
   const image = await decodeImage(file);
   const name = fileBaseName(file.name);
-  if (!editor.perform(openImageEdit(editor.doc, image, name, mode))) throw new Error(BUSY);
+  if (!editor.perform(openImageEdit(editor.doc, image, name, mode))) throw new Error(BUSY_MESSAGE);
   const colors = editor.doc.palette.colors.length;
   const how = mode === 'image' ? `${colors} colors` : `mapped to the current ${colors}-color palette`;
   return `Opened ${file.name} (${image.width}×${image.height}, ${how}).`;
@@ -37,7 +36,7 @@ export async function addImageLayer(editor: Editor, file: File): Promise<string>
   const image = await decodeImage(file);
   const { doc } = editor;
   const edit = importImageLayerEdit(doc, image, fileBaseName(file.name), editor.activeLayerIndex + 1);
-  if (!editor.perform(edit)) throw new Error(BUSY);
+  if (!editor.perform(edit)) throw new Error(BUSY_MESSAGE);
   editor.selectLayer(edit.layer.id);
   const cropped = image.width > doc.width || image.height > doc.height;
   return `Added ${file.name} as a layer${cropped ? `, cropped to ${doc.width}×${doc.height}` : ''}.`;
@@ -62,7 +61,7 @@ export async function openProjectFile(editor: Editor, file: File): Promise<strin
   }
   if (!editor.perform(replaceDocumentEdit(editor.doc, project.document, 'Open project'))) {
     reference?.bitmap.close();
-    throw new Error(BUSY);
+    throw new Error(BUSY_MESSAGE);
   }
   editor.markSaved();
   if (reference) editor.setReference(reference);
@@ -103,6 +102,7 @@ export interface ExportOptions {
 
 /** Encodes the visible layers as an image file. */
 export async function renderExport(doc: PixelDocument, { format, scale, background }: ExportOptions): Promise<Blob> {
+  checkExportSize(doc.width * scale, doc.height * scale);
   let image = upscaleImage(documentImage(doc), scale);
   if (format === 'jpeg') image = flattenImage(image, background);
   return encodeImage(image, format);

@@ -11,7 +11,18 @@ export const IMAGE_FORMATS: Record<ImageFormat, { label: string; mime: string; e
 /** Largest export width or height. Browsers refuse canvases much beyond this. */
 export const MAX_EXPORT_SIZE = 8192;
 
-/** Decodes an image file to exact RGBA (no color-space conversion or premultiplication). */
+/** Throws a RangeError for images too large to encode. Check before building one: they take gigabytes. */
+export function checkExportSize(width: number, height: number): void {
+  if (width > MAX_EXPORT_SIZE || height > MAX_EXPORT_SIZE) {
+    throw new RangeError(`${width}×${height} is too large to export (max ${MAX_EXPORT_SIZE} per side)`);
+  }
+}
+
+/**
+ * Decodes an image file to RGBA without color-space conversion. Opaque and
+ * fully transparent pixels come out exact; translucent ones may be off by
+ * rounding, because canvases store colors premultiplied by alpha.
+ */
 export async function decodeImage(file: Blob): Promise<RgbaImage> {
   let bitmap: ImageBitmap;
   try {
@@ -35,9 +46,7 @@ export async function decodeImage(file: Blob): Promise<RgbaImage> {
  * falls back to another format, as Safari does for WebP.
  */
 export async function encodeImage(image: RgbaImage, format: ImageFormat): Promise<Blob> {
-  if (image.width > MAX_EXPORT_SIZE || image.height > MAX_EXPORT_SIZE) {
-    throw new RangeError(`${image.width}×${image.height} is too large to export (max ${MAX_EXPORT_SIZE} per side)`);
-  }
+  checkExportSize(image.width, image.height);
   const { mime, label } = IMAGE_FORMATS[format];
   const ctx = createContext(image.width, image.height, false);
   const imageData = ctx.createImageData(image.width, image.height);

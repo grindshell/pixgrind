@@ -9,8 +9,9 @@ export class History {
   private readonly redoStack: Edit[] = [];
   private readonly limit: number;
   /**
-   * Stands for the state with nothing left to undo. Replaced whenever that
-   * state changes (the oldest edit is dropped, or history is cleared).
+   * Stands for the state with nothing left to undo. When the oldest edit is
+   * dropped, that state is the one right after it, so the dropped edit keeps
+   * standing for it; clearing history starts a new one.
    */
   private base: object = {};
 
@@ -41,10 +42,8 @@ export class History {
   /** Records an edit that has already been applied to the document. Clears the redo stack. */
   push(edit: Edit): void {
     this.undoStack.push(edit);
-    if (this.undoStack.length > this.limit) {
-      this.undoStack.shift();
-      this.base = {};
-    }
+    const dropped = this.undoStack.length > this.limit ? this.undoStack.shift() : undefined;
+    if (dropped) this.base = dropped;
     this.redoStack.length = 0;
   }
 

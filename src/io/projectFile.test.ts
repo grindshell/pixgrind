@@ -164,6 +164,14 @@ describe('parseProject errors', () => {
     await expect(parse(long)).rejects.toThrow(/layer 1 pixel data is corrupted/);
   });
 
+  it('makes pixel indices past the palette transparent, as they render', async () => {
+    const json = await sampleJson();
+    // The palette has 3 colors.
+    layersOf(json)[0].pixels = toBase64(await deflate(Uint8Array.from({ length: 15 }, (_, i) => i % 6)));
+    const { document: loaded } = await parseProject(JSON.stringify(json));
+    expect(Array.from(loaded.layers[0].pixels)).toEqual([0, 1, 2, 3, 0, 0, 0, 1, 2, 3, 0, 0, 0, 1, 2]);
+  });
+
   it('validates the reference and clamps its scale', async () => {
     const json = JSON.parse(await serializeProject(sampleDoc(), sampleReference())) as Record<string, unknown>;
     const reference = json.reference as Record<string, unknown>;

@@ -2,7 +2,7 @@ import { documentState, type DocumentEdit, type LayerAddEdit } from './edits.ts'
 import { indexImageColors, indexImageToPalette, type RgbaImage } from './image.ts';
 import { createLayer } from './layer.ts';
 import { clonePalette, createPalette } from './palette.ts';
-import { createDocument, type PixelDocument } from './pixelDocument.ts';
+import { checkDocumentSize, createDocument, type PixelDocument } from './pixelDocument.ts';
 
 /** How an opened image's colors become palette indices. */
 export type ImageColorMode =
@@ -17,6 +17,8 @@ export type ImageColorMode =
  * large or (in `image` mode) has too many colors.
  */
 export function openImageEdit(doc: PixelDocument, image: RgbaImage, name: string, mode: ImageColorMode): DocumentEdit {
+  // Before counting colors: a photo that's too large shouldn't be reported as having too many.
+  checkDocumentSize(image.width, image.height);
   const indexed = mode === 'image' ? indexImageColors(image.data) : null;
   // A fully transparent image has no colors of its own; keep the current palette then.
   const palette =

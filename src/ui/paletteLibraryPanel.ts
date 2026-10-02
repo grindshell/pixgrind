@@ -15,6 +15,7 @@ import {
   type PaletteLibrary,
   type SavedPalette,
 } from '../io/paletteLibrary.ts';
+import { BUSY_MESSAGE } from './commands.ts';
 import { el, fieldRow as row, iconButton, option, setButtonLabel, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
 
@@ -138,15 +139,15 @@ export function createPaletteLibraryPanel(editor: Editor, { library, persistent 
       say(`Already using ${palette.name}.`);
       return;
     }
-    editor.perform(edit);
-    say(`${verb} ${palette.name} (${palette.colors.length} colors).`);
+    say(editor.perform(edit) ? `${verb} ${palette.name} (${palette.colors.length} colors).` : BUSY_MESSAGE);
   };
 
   const save = async () => {
     const name = nameInput.value.trim() || doc.palette.name;
     try {
       // Saving under a new name also renames the document's palette, so the two stay in step.
-      editor.perform(paletteEdit(doc, createPalette(name, doc.palette.colors), 'Rename palette'));
+      const rename = paletteEdit(doc, createPalette(name, doc.palette.colors), 'Rename palette');
+      if (rename && !editor.perform(rename)) throw new Error(BUSY_MESSAGE);
       const result = await library.save(doc.palette);
       await refreshList(`saved:${result.id}`);
       say(`Saved ${result.name}.`);

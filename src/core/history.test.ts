@@ -135,6 +135,17 @@ describe('History', () => {
     expect(history.position).not.toBe(beforeClear);
   });
 
+  it('keeps the position of the state after a dropped edit', () => {
+    const doc = createDocument(4, 1, palette);
+    const history = new History(1);
+    history.push(paint(doc, 0, 1));
+    const saved = history.position;
+    history.push(paint(doc, 1, 1));
+    history.undo(doc);
+    // Back to the state right after the dropped edit, e.g. where the document was saved.
+    expect(history.position).toBe(saved);
+  });
+
   it('rejects invalid limits', () => {
     expect(() => new History(0)).toThrow(RangeError);
     expect(() => new History(1.5)).toThrow(RangeError);

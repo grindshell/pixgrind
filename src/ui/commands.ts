@@ -17,6 +17,9 @@ import type { Editor } from './editor.ts';
  * nothing.
  */
 
+/** Shown when `Editor.perform` refuses an edit because a gesture is in progress. */
+export const BUSY_MESSAGE = 'Finish drawing first, then try again.';
+
 export function selectAll(editor: Editor): void {
   editor.perform(selectionEdit(editor.doc, rectMask(documentRect(editor.doc)), 'Select all'));
 }

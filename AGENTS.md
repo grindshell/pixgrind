@@ -385,7 +385,8 @@ storage without updating this section and the palette-swap design.
     eyedropper picks into `slot`.
   - `paints: true` tools are blocked while the active layer is hidden.
   - `shortcut` is matched case-sensitively against `KeyboardEvent.key`, so
-    `"R"` means Shift+R.
+    `"R"` means Shift+R. The case comes from Shift alone, so Caps Lock
+    doesn't change a shortcut.
   - The `TOOLS` array order is the toolbar order.
   - Optional:
     - `hidden` keeps a tool out of the strip (activated elsewhere).
@@ -404,7 +405,9 @@ storage without updating this section and the palette-swap design.
   outside the gesture: per editor in a module `WeakMap`, shown through
   `hover`, finished or cancelled through `key` and `deactivate`. It
   touches no document state until it finishes, so undo and other edits
-  between clicks stay safe.
+  between clicks stay safe. Keys still run while the button is down, so a
+  gesture must check that its work wasn't finished or dropped meanwhile
+  (the polygon's press is then void).
 
   To add a tool: write the object, add its id to `ToolId`, add an icon in
   `ui/icons.ts`, and put it in `TOOLS`. Keep geometry in `core/`.
@@ -571,11 +574,18 @@ storage without updating this section and the palette-swap design.
     them.
   - If no `paste` event follows a Ctrl+V keydown, a `setTimeout` fallback
     pastes the in-memory copy.
-  - A clipboard image that is pixel-identical to our own last copy pastes
-    the in-memory clip, keeping exact indices (duplicate palette colors
-    included). Any other image is mapped to the nearest palette colors.
-  - Text fields keep their normal clipboard. Hidden layers refuse with a
-    message in the File panel status.
+  - Until the page loses focus after a copy, paste uses the in-memory clip
+    whatever the system clipboard holds: no other app can have copied
+    since, so an image there is older (our write failed or is unfinished).
+  - Otherwise a clipboard image that matches our last copy
+    (`clipMatchesImage`: exact for opaque pixels, within premultiplied
+    rounding for translucent ones) pastes the in-memory clip, keeping exact
+    indices (duplicate palette colors included). Any other image is mapped
+    to the nearest palette colors.
+  - Text fields keep their normal clipboard (`isTextEntry`: text inputs,
+    textareas, contenteditable; checkboxes, sliders and drop-downs don't
+    count, so shortcuts keep working after using them). Hidden layers
+    refuse with a message in the File panel status.
 - The renderer draws the selection's `maskOutline` one device pixel inside
   its edge, stroked with a diagonal black/white stripe pattern fixed to the
   canvas (`createAnts`), not a dash pattern: dashes restart on every run, so
@@ -633,9 +643,10 @@ storage without updating this section and the palette-swap design.
   `push` takes an edit that is already applied and clears redo. If
   `applyEdit` throws, the stacks are left unchanged.
 - `History.position` is an opaque token for the current state: undoing or
-  redoing back to a state gives the same token. The empty-stack token is
-  replaced when old edits are dropped or history is cleared, since that
-  state is then no longer the original one. The editor compares it with the
+  redoing back to a state gives the same token. When the oldest edit is
+  dropped, it stays the token of the state after it (now the one with
+  nothing to undo), so undoing back to a save made there reads as clean.
+  Clearing history makes a new token. The editor compares it with the
   position saved by `markSaved` to compute `Editor.dirty`.
 - In the UI, pixel writes go through `editor.beginStroke(label)`, which
   returns a `PixelEditSession`, then `editor.endStroke()`, which commits it.
@@ -676,7 +687,8 @@ storage without updating this section and the palette-swap design.
     encoded at quality 1, which Chromium makes lossless.
   - `encodeImage` rejects when the browser silently substitutes another
     format (Safari WebP), and when an image exceeds `MAX_EXPORT_SIZE` (8192)
-    per side.
+    per side. `renderExport` checks the size (`checkExportSize`) before
+    upscaling, since a 1024px document at 16× would take gigabytes.
   - File names are `<name>[@<scale>x].<ext>`.
 - Not built yet: export of the selection only, a "new document / canvas size"
   dialog, GIF/animated formats.
@@ -701,7 +713,8 @@ storage without updating this section and the palette-swap design.
 - `parseProject` validates everything and throws user-readable errors
   naming the field (e.g. "layer 2 opacity must be between 0 and 1").
   Inflation is capped at the layer's size so a small file can't expand
-  without limit.
+  without limit. Pixel indices past the palette load as transparent, which
+  is how they render, so they can't appear when the palette grows.
 - `serializeProject` copies the document synchronously before its first
   await, so edits made during compression don't leak into the file.
 - Opening a project replaces the document with a `document` edit

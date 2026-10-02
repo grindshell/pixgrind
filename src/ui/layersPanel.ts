@@ -25,20 +25,20 @@ export function createLayersPanel(editor: Editor): HTMLElement {
   const heading = el('h2', 'panel-title');
   heading.textContent = 'Layers';
 
+  // `perform` refuses edits mid-gesture, so only follow up on ones it applied.
   const addButton = iconButton('plus', 'Add layer', () => {
     const edit = addLayerEdit(doc, editor.activeLayerIndex + 1);
-    editor.perform(edit);
-    editor.selectLayer(edit.layer.id);
+    if (editor.perform(edit)) editor.selectLayer(edit.layer.id);
   });
   const duplicateButton = iconButton('duplicate', 'Duplicate layer', () => {
     const edit = duplicateLayerEdit(doc, editor.activeLayer.id);
-    editor.perform(edit);
-    editor.selectLayer(edit.layer.id);
+    if (editor.perform(edit)) editor.selectLayer(edit.layer.id);
   });
   const deleteButton = iconButton('trash', 'Delete layer', () => {
     const index = editor.activeLayerIndex;
-    editor.perform(removeLayerEdit(doc, editor.activeLayer.id));
-    editor.selectLayer(doc.layers[Math.max(0, index - 1)].id);
+    if (editor.perform(removeLayerEdit(doc, editor.activeLayer.id))) {
+      editor.selectLayer(doc.layers[Math.max(0, index - 1)].id);
+    }
   });
 
   const header = el('div', 'panel-header');
@@ -57,8 +57,7 @@ export function createLayersPanel(editor: Editor): HTMLElement {
   });
   const mergeButton = iconButton('mergeDown', 'Merge down', () => {
     const lower = doc.layers[editor.activeLayerIndex - 1];
-    editor.perform(mergeDownEdit(doc, editor.activeLayer.id));
-    editor.selectLayer(lower.id);
+    if (editor.perform(mergeDownEdit(doc, editor.activeLayer.id))) editor.selectLayer(lower.id);
   });
 
   const footer = el('div', 'icon-group layer-footer');
@@ -166,12 +165,10 @@ function startRename(editor: Editor, layer: Layer, nameButton: HTMLButtonElement
     done = true;
     const name = input.value.trim();
     const edit = commit && name ? layerPropsEdit(editor.doc, layer.id, { name }) : null;
-    if (edit) {
-      editor.perform(edit); // the name changes, so the panel rebuilds this row
-    } else {
-      input.replaceWith(nameButton);
-      rerender();
-    }
+    // A rename changes the name, so the panel rebuilds this row.
+    if (editor.perform(edit)) return;
+    input.replaceWith(nameButton);
+    rerender();
   };
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') finish(true);
@@ -217,8 +214,10 @@ function createOpacityControl(editor: Editor): { element: HTMLElement; sync: () 
     const before = dragStart ?? layer.opacity;
     dragStart = null;
     const edit = layerPropsEdit(editor.doc, layer.id, { opacity: percent() / 100 }, { opacity: before });
-    if (edit) editor.perform(edit);
-    else sync();
+    if (editor.perform(edit)) return;
+    // Nothing recorded: don't leave the preview applied outside history.
+    editor.previewLayerOpacity(layer.id, before);
+    sync();
   });
 
   const sync = () => {

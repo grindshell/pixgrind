@@ -1,6 +1,6 @@
 import { parseHex, toHex } from '../core/color.ts';
 import { createLayer, type Layer } from '../core/layer.ts';
-import { createPalette, MAX_PALETTE_COLORS } from '../core/palette.ts';
+import { createPalette, MAX_PALETTE_COLORS, TRANSPARENT } from '../core/palette.ts';
 import { createDocument, type PixelDocument } from '../core/pixelDocument.ts';
 import { clampReferenceScale, type ReferencePlacement } from '../core/referencePlacement.ts';
 import { deflate, fromBase64, inflate, toBase64 } from './bytes.ts';
@@ -142,12 +142,20 @@ async function readV1(file: Json): Promise<Project> {
 
   const layers = list(file.layers, 'layers');
   if (layers.length === 0) throw invalid('it has no layers');
-  doc.layers = await Promise.all(layers.map((value, i) => readLayer(value, `layer ${i + 1}`, width, height)));
+  doc.layers = await Promise.all(
+    layers.map((value, i) => readLayer(value, `layer ${i + 1}`, width, height, colors.length)),
+  );
 
   return { document: doc, reference: readReference(file.reference) };
 }
 
-async function readLayer(value: unknown, where: string, width: number, height: number): Promise<Layer> {
+async function readLayer(
+  value: unknown,
+  where: string,
+  width: number,
+  height: number,
+  colorCount: number,
+): Promise<Layer> {
   const json = record(value, where);
   const layer = createLayer(width, height, text(json, 'name', `${where} name`));
   layer.visible = bool(json, 'visible', `${where} visibility`);
@@ -163,6 +171,11 @@ async function readLayer(value: unknown, where: string, width: number, height: n
     throw invalid(`${where} has ${pixels.length} pixels; a ${width}×${height} layer has ${layer.pixels.length}`);
   }
   layer.pixels.set(pixels);
+  // Indices past the palette render transparent; make them transparent, or
+  // they'd appear as soon as the palette grows (e.g. Add color).
+  for (let i = 0; i < layer.pixels.length; i++) {
+    if (layer.pixels[i] > colorCount) layer.pixels[i] = TRANSPARENT;
+  }
   return layer;
 }
 
