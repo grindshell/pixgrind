@@ -2,7 +2,7 @@ import { stepBrushSize } from '../core/brush.ts';
 import { clearSelection, deselect, dropFloating, nudge, selectAll } from './commands.ts';
 import { isTextEntry } from './dom.ts';
 import type { Editor } from './editor.ts';
-import { TOOLS } from './tools.ts';
+import { getTool, TOOLS } from './tools.ts';
 
 const ARROWS: Record<string, [number, number]> = {
   ArrowLeft: [-1, 0],
@@ -44,6 +44,12 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       else if (key === 'a' && !e.shiftKey) selectAll(editor);
       else if (key === 'd' && !e.shiftKey) deselect(editor);
       else return;
+      e.preventDefault();
+      return;
+    }
+
+    // The active tool goes first, e.g. Enter and Escape for an unfinished polygon.
+    if (getTool(editor.tool).key?.(editor, e.key)) {
       e.preventDefault();
       return;
     }

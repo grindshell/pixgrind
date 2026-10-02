@@ -144,6 +144,7 @@ export class Editor {
 
   setTool(tool: ToolId): void {
     if (this.tool === tool) return;
+    getTool(this.tool).deactivate?.(this);
     this.tool = tool;
     this.requestRender();
     this.notify();

@@ -17,7 +17,9 @@ const ICONS = {
   select: '<rect x="2.5" y="2.5" width="11" height="11" stroke-dasharray="2 2"/>',
   lasso:
     '<path d="M5 11.2C2.6 10.6 1.5 8.8 2.3 6.8 3.4 4 7.8 2.6 11.3 3.5c2.8.7 3.6 3 2.2 4.9-1.4 1.9-5 2.9-8.5 2.8"/><path d="M5 11.2c-.8.9-.6 2.4.8 3.1"/>',
-  wand: '<path d="M2.5 13.5l7-7M11.5 1.5v4M9.5 3.5h4M5 2.5v2M4 3.5h2M13 8.5v2M12 9.5h2"/>',
+  polygon:
+    '<path d="M2.5 6L9 2.5l4.5 5-3 6-6.5-2z"/><path d="M2.5 6h.01M9 2.5h.01M13.5 7.5h.01M10.5 13.5h.01M4 11.5h.01" stroke-width="3"/>',
+  wand:'<path d="M2.5 13.5l7-7M11.5 1.5v4M9.5 3.5h4M5 2.5v2M4 3.5h2M13 8.5v2M12 9.5h2"/>',
   selectReplace: '<rect x="3" y="3" width="10" height="10" fill="currentColor" fill-opacity=".35"/>',
   selectAdd: '<path d="M2 2h8v4h4v8H6v-4H2z" fill="currentColor" fill-opacity=".35"/>',
   selectSubtract:

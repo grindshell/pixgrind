@@ -25,10 +25,11 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
     return { x: Math.floor(exact.x), y: Math.floor(exact.y), exact, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
   };
 
-  /** Tracks the pixel under the pointer for the brush outline. */
+  /** Tracks the pixel under the pointer for the brush outline, and tells the tool between its gestures. */
   const trackPointer = (e: MouseEvent) => {
-    const { x, y } = toolInput(e);
-    editor.setPointer({ x, y });
+    const input = toolInput(e);
+    editor.setPointer({ x: input.x, y: input.y });
+    if (gesture?.kind !== 'tool') getTool(editor.tool).hover?.(editor, input);
   };
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -108,7 +109,9 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
 
   canvas.addEventListener('pointerleave', () => {
     // Keep the brush outline while a captured gesture continues off the canvas.
-    if (!gesture) editor.setPointer(null);
+    if (gesture) return;
+    editor.setPointer(null);
+    getTool(editor.tool).hover?.(editor, null);
   });
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());

@@ -24,6 +24,7 @@ import type { IconName } from './icons.ts';
 export type ToolId =
   | 'select'
   | 'lasso'
+  | 'polygon'
   | 'wand'
   | 'move'
   | 'pencil'
@@ -73,6 +74,18 @@ export interface Tool {
   begin(editor: Editor, input: ToolInput, index: number, slot: ColorSlot): ToolGesture;
   /** Handles the mouse wheel instead of zooming (Ctrl+wheel still zooms). */
   wheel?(editor: Editor, input: ToolInput, direction: 1 | -1): void;
+  /**
+   * Follows the pointer between gestures: over the canvas (including while
+   * panning or zooming moves the document under it), or null when it leaves.
+   */
+  hover?(editor: Editor, input: ToolInput | null): void;
+  /**
+   * Gets first go at keys (without Ctrl/Cmd or Alt) while the tool is
+   * active, e.g. Enter to finish a polygon. Returns whether it used the key.
+   */
+  key?(editor: Editor, key: string): boolean;
+  /** Called when another tool is chosen, to drop unfinished work. */
+  deactivate?(editor: Editor): void;
 }
 
 /**
@@ -324,6 +337,114 @@ const lasso: Tool = {
   },
 };
 
+/** A polygonal lasso's corners so far, and the press that placed the first (its modifiers pick the mode). */
+interface Polygon {
+  corners: Point[];
+  start: ToolInput;
+}
+
+/** Unfinished polygons, per editor. They outlast gestures: each click adds a corner. */
+const polygons = new WeakMap<Editor, Polygon>();
+
+/** Within this many screen pixels of the first corner, a click closes the polygon. */
+const CLOSE_DISTANCE = 8;
+
+/** Whether placing a corner at `input` would close the polygon instead: on the last corner, or near the first. */
+function closesPolygon(editor: Editor, { corners }: Polygon, input: ToolInput): boolean {
+  const last = corners[corners.length - 1];
+  if (input.x === last.x && input.y === last.y) return true;
+  if (corners.length < 2) return false;
+  const first = corners[0];
+  const distance = Math.hypot(input.exact.x - (first.x + 0.5), input.exact.y - (first.y + 0.5));
+  return (input.x === first.x && input.y === first.y) || distance * editor.viewport.zoom <= CLOSE_DISTANCE;
+}
+
+/** Shows the corners, plus a line to the pointer (`tip`), which snaps to the first corner when a click would close. */
+function showPolygon(editor: Editor, polygon: Polygon, tip: ToolInput | null): void {
+  const points = [...polygon.corners];
+  if (tip) points.push(closesPolygon(editor, polygon, tip) ? polygon.corners[0] : { x: tip.x, y: tip.y });
+  editor.previewLasso(points);
+}
+
+/** Selects the polygon's pixels (as the lasso does) and forgets it. Fewer than two corners is an empty shape. */
+function finishPolygon(editor: Editor): void {
+  const polygon = polygons.get(editor);
+  if (!polygon) return;
+  cancelPolygon(editor);
+  const { corners } = polygon;
+  const selection = selecting(editor, polygon.start);
+  selection.preview(corners.length > 1 ? lassoMask(corners, documentRect(editor.doc)) : null);
+  selection.commit();
+}
+
+function cancelPolygon(editor: Editor): void {
+  polygons.delete(editor);
+  editor.previewLasso(null);
+}
+
+/**
+ * Polygonal lasso: each click places a corner (dragging moves it until
+ * release), and the edges between them are straight. Clicking the first
+ * corner, clicking the last one again (so double-clicking) or Enter
+ * finishes; it then selects as the lasso does. Backspace takes back the last
+ * corner and Escape cancels. The selection mode comes from the first click.
+ */
+const polygonLasso: Tool = {
+  id: 'polygon',
+  label: 'Polygonal lasso',
+  icon: 'polygon',
+  shortcut: 'Q',
+  paints: false,
+  continuous: true,
+  begin(editor, start) {
+    const pending = polygons.get(editor);
+    let at = start;
+    const show = (input: ToolInput) => {
+      if (pending) showPolygon(editor, pending, input);
+      else editor.previewLasso([{ x: input.x, y: input.y }]);
+    };
+    show(start);
+    return {
+      move(input) {
+        at = input;
+        show(input);
+      },
+      end() {
+        if (!pending) {
+          polygons.set(editor, { corners: [{ x: at.x, y: at.y }], start });
+        } else if (closesPolygon(editor, pending, at)) {
+          finishPolygon(editor);
+          return;
+        } else {
+          pending.corners.push({ x: at.x, y: at.y });
+        }
+        showPolygon(editor, polygons.get(editor)!, at);
+      },
+    };
+  },
+  hover(editor, input) {
+    const polygon = polygons.get(editor);
+    if (polygon) showPolygon(editor, polygon, input);
+  },
+  key(editor, key) {
+    const polygon = polygons.get(editor);
+    if (!polygon) return false;
+    if (key === 'Enter') {
+      finishPolygon(editor);
+    } else if (key === 'Escape') {
+      cancelPolygon(editor);
+    } else if (key === 'Backspace' || key === 'Delete') {
+      polygon.corners.pop();
+      if (polygon.corners.length === 0) cancelPolygon(editor);
+      else showPolygon(editor, polygon, null);
+    } else {
+      return false;
+    }
+    return true;
+  },
+  deactivate: cancelPolygon,
+};
+
 /**
  * Magic wand: selects the pixels of the clicked color on the active layer,
  * either the touching ones (4-connected, like fill) or all of them, per the
@@ -454,6 +575,7 @@ const reference: Tool = {
 export const TOOLS: readonly Tool[] = [
   select,
   lasso,
+  polygonLasso,
   wand,
   move,
   pencil,

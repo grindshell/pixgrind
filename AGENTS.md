@@ -28,8 +28,9 @@ Built so far:
   utilities.
 - Canvas renderer with checkerboard backdrop, integer zoom, crisp scaling.
 - Tools in a vertical strip beside the canvas: Rectangle select (M), Lasso
-  select (Q), Magic wand (W), Move (V), Pencil (B), Eraser (E), Line (L),
-  Rectangle (R), Filled rectangle (Shift+R), Fill (G), Eyedropper (I).
+  select (Q), Polygonal lasso (Shift+Q), Magic wand (W), Move (V), Pencil
+  (B), Eraser (E), Line (L), Rectangle (R), Filled rectangle (Shift+R), Fill
+  (G), Eyedropper (I).
   - The left button paints the primary color and the right button the
     secondary color (transparent by default, so right-click erases). X
     swaps them.
@@ -43,6 +44,8 @@ Built so far:
 - Selection:
   - Any shape of pixels. Made with the rectangle marquee, the lasso
     (freehand; selects the pixels it passes over and everything inside),
+    the polygonal lasso (click corners; click the first one, double-click
+    or press Enter to finish, Backspace undoes a corner, Escape cancels),
     or the magic wand (the clicked color on the active layer, touching
     pixels only or all of them). Ctrl+A selects all; Ctrl+D or Escape
     deselects. A click without dragging deselects.
@@ -114,9 +117,9 @@ Follow-ups:
 - Selection:
   - Whole-layer moves (nothing selected) don't float, so pixels moved off
     the canvas are still lost on release.
-  - Invert selection (Ctrl+Shift+I is taken by browser dev tools), a
-    polygonal lasso (click corner points), and a wand option to sample all
-    visible layers.
+  - Invert selection (Ctrl+Shift+I is taken by browser dev tools), and a
+    wand option to sample all visible layers.
+  - Shift to snap polygonal lasso edges to 45°, as the Line tool does.
   - Clipboard: paste into a new layer, copy merged (all visible layers), and
     on-screen buttons for touch devices (keyboard only today).
   - Animated marching ants (shift the outline pattern's transform per
@@ -388,8 +391,19 @@ storage without updating this section and the palette-swap design.
     - `brush` paints with `editor.brush` and shows the brush outline.
     - `continuous` forwards every pointer move.
     - `wheel` takes over the mouse wheel.
+    - `hover` follows the pointer between gestures (null when it leaves
+      the canvas).
+    - `key` gets first go at plain keys (no Ctrl/Cmd or Alt) while the
+      tool is active, before the global shortcuts.
+    - `deactivate` runs when `Editor.setTool` switches away.
     - `ToolInput.exact` has the fractional document position; `x`/`y` are
       the floored pixel.
+
+  Work that spans several gestures (the polygonal lasso's corners) lives
+  outside the gesture: per editor in a module `WeakMap`, shown through
+  `hover`, finished or cancelled through `key` and `deactivate`. It
+  touches no document state until it finishes, so undo and other edits
+  between clicks stay safe.
 
   To add a tool: write the object, add its id to `ToolId`, add an icon in
   `ui/icons.ts`, and put it in `TOOLS`. Keep geometry in `core/`.
@@ -469,6 +483,12 @@ storage without updating this section and the palette-swap design.
     (nonzero winding, so loops drawn over themselves stay filled). While
     dragging only the path is drawn (`Editor.previewLasso`); in replace
     mode the old selection is hidden at once.
+  - Polygonal lasso: `lassoMask` over its corners. Each click adds a
+    corner on release (so dragging positions it). A click on the last
+    corner, or on or within `CLOSE_DISTANCE` screen pixels of the first,
+    finishes; the rubber band snaps to the first corner when a click would.
+    Its mode comes from the first click's modifiers, and the current
+    selection stays shown until it finishes.
   - Wand: `floodRegion` (contiguous, 4-connected like fill) or
     `colorRegion` (every pixel of that index) on the active layer, per
     `Editor.wandContiguous`.
