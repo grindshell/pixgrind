@@ -1,6 +1,8 @@
 import type { BrushMask } from '../core/brush.ts';
+import { alpha, blue, green, red } from '../core/color.ts';
 import { compositeRgba } from '../core/composite.ts';
-import type { PixelDocument } from '../core/pixelDocument.ts';
+import { colorForIndex, type Palette } from '../core/palette.ts';
+import { findLayer, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
 import type { Rect } from '../core/rect.ts';
 import type { ReferenceImage } from './referenceImage.ts';
@@ -11,6 +13,8 @@ const CHECKER_LIGHT = '#3a3a44';
 const CHECKER_DARK = '#2e2e37';
 const SELECTION_LIGHT = '#ffffff';
 const SELECTION_DARK = '#000000';
+/** Floating pixels off the document are drawn this faint, relative to their layer. */
+const FLOATING_OVERHANG_ALPHA = 0.5;
 
 /** The brush footprint at a document pixel (the one under the pointer). */
 export interface BrushCursor extends Point {
@@ -32,6 +36,7 @@ export class CanvasRenderer {
   private readonly docCtx: CanvasRenderingContext2D;
   private readonly checker: CanvasPattern;
   private imageData: ImageData | null = null;
+  private floatingImage: { pixels: Uint8Array; palette: Palette; canvas: HTMLCanvasElement } | null = null;
   private cssWidth = 0;
   private cssHeight = 0;
 
@@ -86,8 +91,66 @@ export class CanvasRenderer {
     ctx.drawImage(this.compositeCanvas(doc), offsetX, offsetY, width, height);
 
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
-    if (doc.selection) this.drawSelection(doc.selection, offsetX, offsetY, zoom, dpr);
+    if (doc.floating) this.drawFloatingOverhang(doc, doc.floating, offsetX, offsetY, width, height, zoom);
+    // A float's outline shows all of it, including any part off the document.
+    const outline = doc.floating?.rect ?? doc.selection;
+    if (outline) this.drawSelection(outline, offsetX, offsetY, zoom, dpr);
     if (brush) this.drawBrush(brush, offsetX, offsetY, zoom, dpr);
+  }
+
+  /**
+   * Floating pixels that hang off the document, at half their layer's
+   * opacity, so it's clear they are kept. (Those on the document are already
+   * in the layer.)
+   */
+  private drawFloatingOverhang(
+    doc: PixelDocument,
+    floating: FloatingPixels,
+    offsetX: number,
+    offsetY: number,
+    docWidth: number,
+    docHeight: number,
+    zoom: number,
+  ): void {
+    const { rect } = floating;
+    const layer = findLayer(doc, floating.layerId);
+    const inside = rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= doc.width && rect.y + rect.height <= doc.height;
+    if (inside || !layer?.visible) return;
+    const { ctx } = this;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, this.cssWidth, this.cssHeight);
+    ctx.rect(offsetX, offsetY, docWidth, docHeight);
+    ctx.clip('evenodd');
+    ctx.globalAlpha = layer.opacity * FLOATING_OVERHANG_ALPHA;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(
+      this.floatingCanvas(floating, doc.palette),
+      offsetX + rect.x * zoom,
+      offsetY + rect.y * zoom,
+      rect.width * zoom,
+      rect.height * zoom,
+    );
+    ctx.restore();
+  }
+
+  /** The float's pixels as an image, rebuilt only when its pixels or the palette change (moves share pixels). */
+  private floatingCanvas(floating: FloatingPixels, palette: Palette): HTMLCanvasElement {
+    const cached = this.floatingImage;
+    if (cached?.pixels === floating.pixels && cached.palette === palette) return cached.canvas;
+    const { width, height } = floating.rect;
+    const canvas = cached?.canvas ?? document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = get2dContext(canvas);
+    const image = ctx.createImageData(width, height);
+    floating.pixels.forEach((index, i) => {
+      const color = colorForIndex(palette, index);
+      image.data.set([red(color), green(color), blue(color), alpha(color)], i * 4);
+    });
+    ctx.putImageData(image, 0, 0);
+    this.floatingImage = { pixels: floating.pixels, palette, canvas };
+    return canvas;
   }
 
   /**

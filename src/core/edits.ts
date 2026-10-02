@@ -1,6 +1,13 @@
 import type { Layer } from './layer.ts';
 import { clonePalette, type Palette } from './palette.ts';
-import { findLayer, inBounds, layerIndex, setPixel, type PixelDocument } from './pixelDocument.ts';
+import {
+  findLayer,
+  inBounds,
+  layerIndex,
+  setPixel,
+  type FloatingPixels,
+  type PixelDocument,
+} from './pixelDocument.ts';
 import { rectContains, type Rect } from './rect.ts';
 
 /** A pixel-level change to one layer, stored as a diff. */
@@ -67,6 +74,7 @@ export interface DocumentState {
   /** Layer objects are held by reference, as in layer add/remove edits. */
   layers: Layer[];
   selection: Rect | null;
+  floating: FloatingPixels | null;
 }
 
 /**
@@ -89,6 +97,7 @@ export function documentState(doc: PixelDocument): DocumentState {
     palette: clonePalette(doc.palette),
     layers: [...doc.layers],
     selection: doc.selection,
+    floating: doc.floating,
   };
 }
 
@@ -115,6 +124,17 @@ export interface SelectionEdit {
   after: Rect | null;
 }
 
+/**
+ * Sets or clears the floating selection. Changes no pixels: moves batch it
+ * with the pixel edit that restamps the float.
+ */
+export interface FloatingEdit {
+  kind: 'floating';
+  label: string;
+  before: FloatingPixels | null;
+  after: FloatingPixels | null;
+}
+
 /** Several edits applied as one history entry, in order on redo and in reverse on undo. */
 export interface BatchEdit {
   kind: 'batch';
@@ -134,8 +154,26 @@ export type Edit =
   | LayerPropsEdit
   | PaletteEdit
   | SelectionEdit
+  | FloatingEdit
   | DocumentEdit
   | BatchEdit;
+
+/**
+ * Whether an edit sets the floating selection itself. Any other edit drops
+ * the float first (`Editor.perform`), which is safe because dropping changes
+ * no pixels.
+ */
+export function editSetsFloating(edit: Edit): boolean {
+  switch (edit.kind) {
+    case 'floating':
+    case 'document':
+      return true;
+    case 'batch':
+      return edit.edits.some(editSetsFloating);
+    default:
+      return false;
+  }
+}
 
 /**
  * Where palette index `index` ends up after applying (`redo`) or reverting
@@ -223,6 +261,9 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
     case 'selection':
       doc.selection = direction === 'redo' ? edit.after : edit.before;
       return;
+    case 'floating':
+      doc.floating = direction === 'redo' ? edit.after : edit.before;
+      return;
     case 'document': {
       const state = direction === 'redo' ? edit.after : edit.before;
       if (state.layers.some((layer) => layer.pixels.length !== state.width * state.height)) {
@@ -234,6 +275,7 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
       doc.palette = clonePalette(state.palette);
       doc.layers = [...state.layers];
       doc.selection = state.selection;
+      doc.floating = state.floating;
       return;
     }
     case 'batch':

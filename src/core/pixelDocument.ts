@@ -19,6 +19,30 @@ export interface PixelDocument {
    * the pixel moves they accompany. Not part of saved image data.
    */
   selection: Rect | null;
+  /** Selected pixels being moved, kept even where they hang off the document. Null when nothing floats. */
+  floating: FloatingPixels | null;
+}
+
+/**
+ * A floating selection: pixels lifted from a layer by the Move tool. They
+ * stay stamped into the layer at `rect` (so everything else sees them as
+ * ordinary layer pixels), and this record keeps what that loses: the pixels
+ * that hang off the document, and what each stamped pixel covers. Moving
+ * the float puts back what it covered and stamps it again elsewhere.
+ * Dropping it just forgets this record. Never mutated: moves make a new one.
+ */
+export interface FloatingPixels {
+  layerId: string;
+  /** Where the pixels are, in document coordinates; may extend past the document. */
+  rect: Rect;
+  /** The lifted palette indices, row-major over `rect`. Transparent ones don't cover anything. */
+  pixels: Uint8Array;
+  /**
+   * The layer's value under each non-transparent pixel inside the document,
+   * parallel to `pixels` (other entries are unused). Right after lifting
+   * this is transparent: the hole the pixels leave.
+   */
+  under: Uint8Array;
 }
 
 export function createDocument(width: number, height: number, palette: Palette, name = 'Untitled'): PixelDocument {
@@ -37,6 +61,7 @@ export function createDocument(width: number, height: number, palette: Palette, 
     palette: clonePalette(palette),
     layers: [createLayer(width, height, 'Layer 1')],
     selection: null,
+    floating: null,
   };
 }
 

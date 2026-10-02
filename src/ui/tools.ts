@@ -6,9 +6,9 @@ import { TRANSPARENT } from '../core/palette.ts';
 import { pixelPerfectPath } from '../core/pixelPerfect.ts';
 import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
-import { clipRect, rectFromCorners, translateRect } from '../core/rect.ts';
+import { clipRect, rectFromCorners, rectsEqual } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
-import { movedPixels, selectionChange } from '../core/selection.ts';
+import { floatingChange, liftSelection, movedPixels, moveFloating, selectionChange } from '../core/selection.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
@@ -212,7 +212,8 @@ const eyedropper: Tool = {
 
 /**
  * Rectangle marquee. Dragging selects the spanned pixels (clipped to the
- * document); clicking without dragging deselects.
+ * document); clicking without dragging deselects. Either drops a floating
+ * selection where it is.
  */
 const select: Tool = {
   id: 'select',
@@ -223,6 +224,9 @@ const select: Tool = {
   begin(editor, start) {
     const { doc } = editor;
     const before = doc.selection;
+    const floating = doc.floating;
+    // Show the new marquee rather than the float's outline from the start.
+    editor.previewFloating(null);
     let dragged = false;
     return {
       move(input) {
@@ -232,16 +236,19 @@ const select: Tool = {
       end() {
         if (!dragged) editor.previewSelection(null);
         const after = doc.selection;
-        editor.record(selectionChange(before, after, after ? 'Select' : 'Deselect'));
+        const label = after ? 'Select' : 'Deselect';
+        editor.record(combineEdits(label, [floatingChange(floating, null, label), selectionChange(before, after, label)]));
       },
     };
   },
 };
 
 /**
- * Drags the selected pixels of the active layer (the whole layer when
- * nothing is selected), and the selection with them. Shift locks to one axis.
- * Pixels dragged off the canvas are dropped on release.
+ * Drags the selected pixels of the active layer, and the selection with
+ * them; Shift locks to one axis. Selected pixels float (see
+ * `FloatingPixels`): ones dragged off the canvas are kept, across drags,
+ * until the float is dropped. With nothing selected the whole layer moves,
+ * and pixels dragged off the canvas are lost on release.
  */
 const move: Tool = {
   id: 'move',
@@ -251,10 +258,15 @@ const move: Tool = {
   paints: true,
   begin(editor, start) {
     const { doc } = editor;
-    const original = doc.selection;
-    const area = original ?? documentRect(doc);
+    const layer = editor.activeLayer;
+    const startSelection = doc.selection;
+    const startFloating = doc.floating;
+    const origin = startFloating?.layerId === layer.id ? startFloating : liftSelection(doc, layer);
     // Not clipped: moved pixels may land outside the original selection.
     const session = editor.beginStroke('Move', { clipToSelection: false });
+    const write = (values: Map<number, number>) => {
+      for (const [offset, value] of values) session.setPixel(offset % doc.width, Math.floor(offset / doc.width), value);
+    };
 
     return {
       move(input) {
@@ -264,18 +276,34 @@ const move: Tool = {
           if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
           else dx = 0;
         }
-        // Recompute from the untouched original each time, so dragging past
-        // the edge and back loses nothing until release.
+        // Recompute from the state at the start of the drag each time.
         session.revert();
-        for (const [offset, value] of movedPixels(doc, session.layer, area, dx, dy)) {
-          session.setPixel(offset % doc.width, Math.floor(offset / doc.width), value);
+        if (origin) {
+          const { values, moved } = moveFloating(doc, layer, origin, dx, dy);
+          write(values);
+          editor.previewFloating(moved);
+          editor.previewSelection(clipRect(moved.rect, doc.width, doc.height));
+        } else {
+          write(movedPixels(doc, layer, documentRect(doc), dx, dy));
         }
-        if (original) editor.previewSelection(clipRect(translateRect(original, dx, dy), doc.width, doc.height));
         editor.requestRender();
       },
       end() {
         const pixels = editor.takeStroke();
-        editor.record(combineEdits('Move', [pixels, selectionChange(original, doc.selection, 'Move')]));
+        if (origin && rectsEqual(doc.floating?.rect ?? null, origin.rect)) {
+          // Dragged back to where it started: nothing to record, not even a lift.
+          editor.previewFloating(startFloating);
+          editor.previewSelection(startSelection);
+          editor.record(pixels);
+          return;
+        }
+        editor.record(
+          combineEdits('Move', [
+            pixels,
+            floatingChange(startFloating, doc.floating, 'Move'),
+            selectionChange(startSelection, doc.selection, 'Move'),
+          ]),
+        );
       },
     };
   },

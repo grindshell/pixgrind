@@ -1,5 +1,5 @@
 import { stepBrushSize } from '../core/brush.ts';
-import { clearSelection, deselect, nudge, selectAll } from './commands.ts';
+import { clearSelection, deselect, dropFloating, nudge, selectAll } from './commands.ts';
 import type { Editor } from './editor.ts';
 import { TOOLS } from './tools.ts';
 
@@ -49,6 +49,12 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
 
     if (e.key === 'Escape') {
       deselect(editor);
+      return;
+    }
+    // Enter drops floating pixels in place; on a focused button it clicks it instead.
+    if (e.key === 'Enter' && editor.doc.floating && !(e.target instanceof HTMLButtonElement)) {
+      e.preventDefault();
+      dropFloating(editor);
       return;
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {

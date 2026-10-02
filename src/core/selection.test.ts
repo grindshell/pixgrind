@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdit, type Edit } from './edits.ts';
+import { applyEdit, editSetsFloating, type Edit } from './edits.ts';
 import { History } from './history.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, type PixelDocument } from './pixelDocument.ts';
-import { clearSelectionEdit, movedPixels, moveEdit, selectionChange, selectionEdit } from './selection.ts';
+import type { Rect } from './rect.ts';
+import {
+  clearSelectionEdit,
+  deleteFloatingEdit,
+  dropFloatingEdit,
+  liftSelection,
+  movedPixels,
+  moveEdit,
+  moveFloating,
+  moveSelectionEdit,
+  selectionChange,
+  selectionEdit,
+} from './selection.ts';
 
 const palette = createPalette('test', [0xff0000ff, 0x00ff00ff, 0x0000ffff]);
 
@@ -136,6 +148,109 @@ describe('moveEdit', () => {
   it('is null for a zero move', () => {
     const doc = docFrom(['12']);
     expect(moveEdit(doc, doc.layers[0], 0, 0)).toBeNull();
+  });
+});
+
+describe('floating selections', () => {
+  /** Selects `rect` and moves it by each step in turn, as separate history entries. */
+  function moveSteps(doc: PixelDocument, history: History, rect: Rect, steps: Array<[number, number]>): void {
+    doc.selection = rect;
+    for (const [dx, dy] of steps) perform(doc, history, moveSelectionEdit(doc, doc.layers[0], dx, dy));
+  }
+
+  it('keeps pixels moved off the document until they come back', () => {
+    const doc = docFrom(['0000', '0120', '0000']);
+    const history = new History();
+    moveSteps(doc, history, { x: 1, y: 1, width: 2, height: 1 }, [[2, 0]]);
+    expect(rows(doc)).toEqual(['0000', '0001', '0000']);
+    expect(doc.floating?.rect).toEqual({ x: 3, y: 1, width: 2, height: 1 });
+    expect(doc.selection).toEqual({ x: 3, y: 1, width: 1, height: 1 });
+    perform(doc, history, moveSelectionEdit(doc, doc.layers[0], -2, 0));
+    expect(rows(doc)).toEqual(['0000', '0120', '0000']);
+    expect(doc.selection).toEqual({ x: 1, y: 1, width: 2, height: 1 });
+  });
+
+  it('uncovers what it passed over, and transparent parts cover nothing', () => {
+    const doc = docFrom(['1033']);
+    const history = new History();
+    moveSteps(doc, history, { x: 0, y: 0, width: 2, height: 1 }, [[2, 0]]);
+    expect(rows(doc)).toEqual(['0013']);
+    perform(doc, history, moveSelectionEdit(doc, doc.layers[0], -1, 0));
+    expect(rows(doc)).toEqual(['0133']);
+  });
+
+  it('survives being moved entirely off the document', () => {
+    const doc = docFrom(['12']);
+    const history = new History();
+    moveSteps(doc, history, { x: 0, y: 0, width: 2, height: 1 }, [[5, 0]]);
+    expect(rows(doc)).toEqual(['00']);
+    expect(doc.selection).toBeNull();
+    perform(doc, history, moveSelectionEdit(doc, doc.layers[0], -5, 0));
+    expect(rows(doc)).toEqual(['12']);
+  });
+
+  it('undoes each move, back to no float', () => {
+    const doc = docFrom(['1200']);
+    const history = new History();
+    moveSteps(doc, history, { x: 0, y: 0, width: 2, height: 1 }, [[3, 0], [-1, 0]]);
+    expect(rows(doc)).toEqual(['0012']);
+    history.undo(doc);
+    expect(rows(doc)).toEqual(['0001']);
+    history.undo(doc);
+    expect(rows(doc)).toEqual(['1200']);
+    expect(doc.floating).toBeNull();
+    expect(doc.selection).toEqual({ x: 0, y: 0, width: 2, height: 1 });
+  });
+
+  it('dropping keeps the pixels and forgets what they covered', () => {
+    const doc = docFrom(['13']);
+    const history = new History();
+    moveSteps(doc, history, { x: 0, y: 0, width: 1, height: 1 }, [[1, 0]]);
+    expect(rows(doc)).toEqual(['01']);
+    const drop = dropFloatingEdit(doc);
+    expect(drop?.kind).toBe('floating');
+    perform(doc, history, drop);
+    expect(rows(doc)).toEqual(['01']);
+    expect(doc.floating).toBeNull();
+    // Moving again lifts afresh: the covered 3 is gone.
+    perform(doc, history, moveSelectionEdit(doc, doc.layers[0], -1, 0));
+    expect(rows(doc)).toEqual(['10']);
+  });
+
+  it('deleting the float uncovers what was under it and keeps the selection', () => {
+    const doc = docFrom(['13']);
+    const history = new History();
+    moveSteps(doc, history, { x: 0, y: 0, width: 1, height: 1 }, [[1, 0]]);
+    perform(doc, history, deleteFloatingEdit(doc));
+    expect(rows(doc)).toEqual(['03']);
+    expect(doc.floating).toBeNull();
+    expect(doc.selection).toEqual({ x: 1, y: 0, width: 1, height: 1 });
+    history.undo(doc);
+    expect(rows(doc)).toEqual(['01']);
+    expect(doc.floating).not.toBeNull();
+  });
+
+  it('lifting changes no pixels', () => {
+    const doc = docFrom(['12', '30']);
+    doc.selection = { x: 0, y: 0, width: 2, height: 2 };
+    const floating = liftSelection(doc, doc.layers[0]);
+    expect(Array.from(floating!.pixels)).toEqual([1, 2, 3, 0]);
+    const { values } = moveFloating(doc, doc.layers[0], floating!, 0, 0);
+    for (const [offset, value] of values) expect(doc.layers[0].pixels[offset]).toBe(value);
+  });
+
+  it('falls back to moving the whole layer without a selection', () => {
+    const doc = docFrom(['120']);
+    applyEdit(doc, moveSelectionEdit(doc, doc.layers[0], 1, 0)!, 'redo');
+    expect(rows(doc)).toEqual(['012']);
+    expect(doc.floating).toBeNull();
+  });
+
+  it('marks which edits manage the float themselves', () => {
+    const doc = docFrom(['12']);
+    doc.selection = { x: 0, y: 0, width: 1, height: 1 };
+    expect(editSetsFloating(moveSelectionEdit(doc, doc.layers[0], 1, 0)!)).toBe(true);
+    expect(editSetsFloating(clearSelectionEdit(doc, doc.layers[0])!)).toBe(false);
   });
 });
 

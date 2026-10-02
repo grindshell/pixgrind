@@ -1,5 +1,12 @@
+import { combineEdits } from '../core/edits.ts';
 import { documentRect } from '../core/pixelDocument.ts';
-import { clearSelectionEdit, moveEdit, selectionEdit } from '../core/selection.ts';
+import {
+  clearSelectionEdit,
+  deleteFloatingEdit,
+  dropFloatingEdit,
+  moveSelectionEdit,
+  selectionEdit,
+} from '../core/selection.ts';
 import type { Editor } from './editor.ts';
 
 /*
@@ -12,18 +19,34 @@ export function selectAll(editor: Editor): void {
   editor.perform(selectionEdit(editor.doc, documentRect(editor.doc), 'Select all'));
 }
 
+/** Deselects, dropping a floating selection where it is. */
 export function deselect(editor: Editor): void {
-  editor.perform(selectionEdit(editor.doc, null, 'Deselect'));
+  const { doc } = editor;
+  editor.perform(combineEdits('Deselect', [dropFloatingEdit(doc, 'Deselect'), selectionEdit(doc, null, 'Deselect')]));
 }
 
-/** Clears the selected pixels on the active layer. Does nothing without a selection or on a hidden layer. */
+/** Drops a floating selection where it is, keeping the selection. */
+export function dropFloating(editor: Editor): void {
+  editor.perform(dropFloatingEdit(editor.doc));
+}
+
+/**
+ * Deletes the selected pixels on the active layer: a floating selection's
+ * pixels (uncovering what they were over), or else everything in the
+ * selection. Does nothing without a selection or on a hidden layer.
+ */
 export function clearSelection(editor: Editor): void {
-  if (!editor.activeLayer.visible) return;
-  editor.perform(clearSelectionEdit(editor.doc, editor.activeLayer));
+  const { doc, activeLayer } = editor;
+  if (!activeLayer.visible) return;
+  const floatsHere = doc.floating?.layerId === activeLayer.id;
+  editor.perform(floatsHere ? deleteFloatingEdit(doc) : clearSelectionEdit(doc, activeLayer));
 }
 
-/** Moves the selected pixels (or the whole active layer) by (dx, dy). Does nothing on a hidden layer. */
+/**
+ * Moves the selected pixels (or the whole active layer) by (dx, dy). Selected
+ * pixels float, as with the Move tool. Does nothing on a hidden layer.
+ */
 export function nudge(editor: Editor, dx: number, dy: number): void {
   if (!editor.activeLayer.visible) return;
-  editor.perform(moveEdit(editor.doc, editor.activeLayer, dx, dy, 'Nudge'));
+  editor.perform(moveSelectionEdit(editor.doc, editor.activeLayer, dx, dy, 'Nudge'));
 }

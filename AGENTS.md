@@ -42,10 +42,16 @@ Built so far:
   Pencil and Eraser drop the corners of L-shaped turns.
 - Selection:
   - Rectangle marquee. Ctrl+A selects all; Ctrl+D or Escape deselects.
-  - Delete/Backspace clears the selected pixels.
-  - With the Move tool, the arrow keys nudge 1px, or 10px with Shift.
+  - Moving selected pixels (Move tool, or arrow keys with it: 1px, 10px
+    with Shift) floats them.
+    - Pixels moved off the canvas are kept, shown faintly outside it, until
+      the float is dropped.
+    - Enter drops it in place. Deselecting, a new marquee, or any other edit
+      drops it too.
+    - Delete/Backspace deletes the floating pixels, uncovering what was
+      under them. Without a float it clears the selected pixels.
   - Painting and fill are clipped to the selection.
-  - Selection changes and moves are undoable.
+  - Selection changes, moves and drops are undoable.
 - Palette panel:
   - Swatches: click for the primary color, right-click (or the context menu
     key) for the secondary, + to add.
@@ -91,8 +97,8 @@ Follow-ups:
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
 - Selection:
-  - A floating selection that keeps pixels moved off-canvas until it is
-    committed (today they are dropped on release).
+  - Whole-layer moves (nothing selected) don't float, so pixels moved off
+    the canvas are still lost on release.
   - Non-rectangular selections (lasso, magic wand) and copy/paste.
   - Animated marching ants.
   - Dragging inside a selection with the marquee to move only the outline.
@@ -302,7 +308,8 @@ storage without updating this section and the palette-swap design.
   an anchor, center, and the logarithmic slider mapping. Scale is clamped to
   0.01–64.
 - Rendering order: checkerboard, then the reference if below, then artwork,
-  then the reference if above, then the selection, then the brush outline.
+  then the reference if above, then floating pixels off the document, then
+  the selection (or float) outline, then the brush outline.
   The reference is clipped
   to the document rect and drawn with `globalAlpha` and its own smoothing
   setting (on by default for photos). Artwork smoothing stays off.
@@ -417,13 +424,43 @@ storage without updating this section and the palette-swap design.
   it to `floodRegion` as bounds. The flood itself stays inside rather than
   being clipped afterwards. Pass `{ clipToSelection: false }` for tools that
   must write outside it (Move).
-- Move: on each pointer move, `session.revert()`, then rewrite
-  `movedPixels(...)` computed from the untouched original. The source area is
-  cleared and only non-transparent pixels are stamped, so transparent parts
-  don't cover what's beneath. Pixels landing outside the document are
-  dropped on release. With no selection, the whole layer moves.
+- **Floating selections** (`doc.floating: FloatingPixels | null`): moving
+  selected pixels lifts them into a float.
+  - The float's pixels are always stamped into its layer at `rect`. So
+    export, save, the eyedropper, thumbnails, palette tools and color usage
+    all just see layer pixels.
+  - The float record adds what stamping loses: the lifted `pixels` (including
+    any off the document) and `under`, the layer value beneath each stamped
+    pixel.
+  - Lifting and dropping therefore change no pixels. Moving (`moveFloating`)
+    puts `under` back, then stamps at the new place, recording the new
+    `under`. Transparent float pixels cover nothing.
+  - `rect` may extend past the document. `doc.selection` is kept as `rect`
+    clipped to the document (null when entirely off it), so selection
+    clipping still works. The renderer outlines `rect` instead, and draws
+    off-document float pixels at half their layer's opacity.
+  - Edits: a `floating` edit sets or clears the float. `moveSelectionEdit`
+    (nudge) lifts if needed and batches pixels + floating + selection.
+    `dropFloatingEdit` and `deleteFloatingEdit` (Delete key: uncovers
+    `under`) are the other two.
+  - **Any edit that doesn't manage the float itself drops it.**
+    `Editor.perform`/`record` prepend a drop to the same history entry
+    unless `editSetsFloating(edit)`. Dropping changes no pixels, so edits
+    built while the float existed stay valid, and undo restores the float.
+    Code that changes the document doesn't need to know about floats.
+  - The marquee drops the float at gesture start (`previewFloating(null)`)
+    so the new marquee shows, and records the drop with the selection.
+  - With no selection, Move moves the whole layer without floating:
+    `movedPixels` from the untouched original on each pointer move, and
+    pixels outside the document are lost on release.
+  - A float belongs to a layer (`layerId`). Moving on another layer lifts a
+    new float there, replacing (dropping) the old one.
+- Move tool: on each pointer move, `session.revert()`, then rewrite from the
+  state at the start of the drag (`moveFloating` from the starting float).
+  The drag is one history entry; dragging back to the start records nothing.
 - Keyboard selection actions live in `ui/commands.ts` (select all, deselect,
-  clear, nudge) and use the core constructors in `core/selection.ts`.
+  drop, clear, nudge) and use the core constructors in `core/selection.ts`.
+  Enter drops a float; Escape and Ctrl+D drop and deselect.
 - The renderer draws the selection as a 1-device-pixel dashed black/white
   outline.
 
@@ -441,6 +478,7 @@ storage without updating this section and the palette-swap design.
   - `layer-add`, `layer-remove`, `layer-move`, `layer-props` (name, opacity)
   - `palette`
   - `selection`
+  - `floating` (sets or clears the floating selection; see Selection)
   - `document` (replaces everything; e.g. opening an image)
   - `batch`, which is all-or-nothing: it rolls back if any part fails.
     `combineEdits(label, edits)` builds one, or returns the single edit or
@@ -531,8 +569,9 @@ storage without updating this section and the palette-swap design.
     indices, row-major.
   - An optional `reference`: the original image file (base64) with its MIME
     type, placement and settings. It's re-decoded on load.
-- Not saved: the selection, history, view, active layer, tool or primary
-  color. Layer ids are regenerated on load.
+- Not saved: the selection, floating selection (its on-canvas pixels are in
+  the layer; off-canvas ones are lost), history, view, active layer, tool or
+  paint colors. Layer ids are regenerated on load.
 - `PROJECT_VERSION` is 1. When the schema changes, bump it and keep reading
   every older version by migrating its JSON to the current shape before
   reading. A newer version than this build knows is refused with a clear

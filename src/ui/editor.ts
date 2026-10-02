@@ -3,6 +3,7 @@ import type { Rgba } from '../core/color.ts';
 import {
   applyEdit,
   beginPixelEdit,
+  editSetsFloating,
   followIndex,
   type Edit,
   type EditDirection,
@@ -12,7 +13,7 @@ import {
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import { TRANSPARENT } from '../core/palette.ts';
-import { findLayer, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
+import { findLayer, layerIndex, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
 import type { Rect } from '../core/rect.ts';
 import { CanvasRenderer, type BrushCursor } from '../render/canvasRenderer.ts';
@@ -190,10 +191,23 @@ export class Editor {
    */
   perform(edit: Edit | null): boolean {
     if (!edit || this.busy) return false;
-    applyEdit(this.doc, edit, 'redo');
-    this.history.push(edit);
-    this.documentChanged(edit, 'redo');
+    const full = this.droppingFloat(edit);
+    applyEdit(this.doc, full, 'redo');
+    this.history.push(full);
+    this.documentChanged(full, 'redo');
     return true;
+  }
+
+  /**
+   * Any edit that doesn't manage the floating selection itself drops it
+   * first, in the same history entry, so undo brings the float back. This is
+   * safe for edits built while the float existed: dropping changes no pixels.
+   */
+  private droppingFloat(edit: Edit): Edit {
+    const { floating } = this.doc;
+    if (!floating || editSetsFloating(edit)) return edit;
+    const drop: Edit = { kind: 'floating', label: edit.label, before: floating, after: null };
+    return { kind: 'batch', label: edit.label, edits: [drop, edit] };
   }
 
   /**
@@ -240,6 +254,15 @@ export class Editor {
   }
 
   /**
+   * Live floating-selection preview (e.g. while dragging it). Not recorded:
+   * follow up with `record(...)` including `floatingChange(before, after, label)`.
+   */
+  previewFloating(floating: FloatingPixels | null): void {
+    this.doc.floating = floating;
+    this.requestRender();
+  }
+
+  /**
    * Starts recording pixel writes to the active layer as one undoable edit.
    * All UI pixel writes must go through a stroke so they land in history.
    * Writes are clipped to the selection unless `clipToSelection` is false.
@@ -266,8 +289,11 @@ export class Editor {
   /** Records an edit whose changes are already applied (strokes, previews). No-op for null. */
   record(edit: Edit | null): void {
     if (!edit) return;
-    this.history.push(edit);
-    this.documentChanged(edit, 'redo');
+    const full = this.droppingFloat(edit);
+    // A drop added here isn't applied yet, and this is all it does.
+    if (full !== edit) this.doc.floating = null;
+    this.history.push(full);
+    this.documentChanged(full, 'redo');
   }
 
   /** Whether a pointer gesture or stroke is in progress; undo/redo and `perform` wait until it ends. */
