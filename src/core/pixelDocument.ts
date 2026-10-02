@@ -1,5 +1,6 @@
 import { createLayer, type Layer } from './layer.ts';
 import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
+import type { Rect } from './rect.ts';
 
 export interface PixelDocument {
   width: number;
@@ -7,6 +8,12 @@ export interface PixelDocument {
   palette: Palette;
   /** Bottom to top. */
   layers: Layer[];
+  /**
+   * Selected area, always inside the document, or null for none. Lives here
+   * (not in editor state) so selection changes go through undo history with
+   * the pixel moves they accompany. Not part of saved image data.
+   */
+  selection: Rect | null;
 }
 
 export function createDocument(width: number, height: number, palette: Palette): PixelDocument {
@@ -18,7 +25,13 @@ export function createDocument(width: number, height: number, palette: Palette):
     height,
     palette: clonePalette(palette),
     layers: [createLayer(width, height, 'Layer 1')],
+    selection: null,
   };
+}
+
+/** The whole document as a rectangle. */
+export function documentRect(doc: PixelDocument): Rect {
+  return { x: 0, y: 0, width: doc.width, height: doc.height };
 }
 
 /** Position of a layer in `doc.layers` (0 = bottom), or -1 if it isn't there. */

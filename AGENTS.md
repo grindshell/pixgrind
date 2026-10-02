@@ -27,12 +27,19 @@ Built so far:
 - Layer compositing, rasterization (line, rect), flood fill, color/hex
   utilities.
 - Canvas renderer with checkerboard backdrop, integer zoom, crisp scaling.
-- Tools in a vertical strip beside the canvas: Pencil (B), Eraser (E), Line
-  (L), Rectangle (R), Filled rectangle (Shift+R), Fill (G), Eyedropper (I).
+- Tools in a vertical strip beside the canvas: Rectangle select (M), Move
+  (V), Pencil (B), Eraser (E), Line (L), Rectangle (R), Filled rectangle
+  (Shift+R), Fill (G), Eyedropper (I).
   - The left button uses the primary color and the right button uses
     transparent.
   - Alt+click picks a color whatever the tool.
   - Middle-drag pans and the wheel zooms around the cursor.
+- Selection:
+  - Rectangle marquee. Ctrl+A selects all; Ctrl+D or Escape deselects.
+  - Delete/Backspace clears the selected pixels.
+  - With the Move tool, the arrow keys nudge 1px, or 10px with Shift.
+  - Painting and fill are clipped to the selection.
+  - Selection changes and moves are undoable.
 - Palette panel showing the default PICO-8 palette; click to select a color.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y.
@@ -40,14 +47,20 @@ Built so far:
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 
-Not built yet, roughly in priority order: select/move tool, palette
-management and swap, image import/export, reference images, project files.
+Not built yet, roughly in priority order: palette management and swap, image
+import/export, reference images, project files.
 Follow-ups:
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
 - Tools: a choosable secondary color (the right button is fixed to
   transparent), brush sizes, shape previews that react to Shift being pressed
   without moving the pointer.
+- Selection:
+  - A floating selection that keeps pixels moved off-canvas until it is
+    committed (today they are dropped on release).
+  - Non-rectangular selections (lasso, magic wand) and copy/paste.
+  - Animated marching ants.
+  - Dragging inside a selection with the marquee to move only the outline.
 
 ## Git
 
@@ -104,12 +117,14 @@ src/
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
                  composite (+ visibleIndexAt), raster (line, rect, shape
-                 constraints), floodFill, edits (undoable changes),
-                 layerEdits (edit constructors for layer operations), history
+                 constraints), rect (Rect geometry), floodFill, edits
+                 (undoable changes), layerEdits and selection (edit
+                 constructors), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
   io/            (not created yet) import/export: images, palette files,
                  project files
   ui/            Editor state + mounting, canvas input, tools + tool strip,
+                 commands (non-pointer actions like select all, nudge),
                  keyboard shortcuts, history controls, palette panel, layers
                  panel, DOM helpers (dom.ts) and inline SVG icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
@@ -227,6 +242,26 @@ storage without updating this section and the palette-swap design.
 - Eyedropper (`visibleIndexAt`) picks the topmost visible color, not the
   active layer's, and ignores transparent pixels.
 
+### Selection
+
+- `doc.selection` is a `Rect` (always inside the document) or null. It lives
+  on the document, not the editor, so selection changes are undoable and a
+  move restores both pixels and outline in one step. It isn't image data, so
+  don't export it.
+- With a selection, `editor.beginStroke` clips writes to it, and fill passes
+  it to `floodRegion` as bounds. The flood itself stays inside rather than
+  being clipped afterwards. Pass `{ clipToSelection: false }` for tools that
+  must write outside it (Move).
+- Move: on each pointer move, `session.revert()`, then rewrite
+  `movedPixels(...)` computed from the untouched original. The source area is
+  cleared and only non-transparent pixels are stamped, so transparent parts
+  don't cover what's beneath. Pixels landing outside the document are
+  dropped on release. With no selection, the whole layer moves.
+- Keyboard selection actions live in `ui/commands.ts` (select all, deselect,
+  clear, nudge) and use the core constructors in `core/selection.ts`.
+- The renderer draws the selection as a 1-device-pixel dashed black/white
+  outline.
+
 ### Undo/redo
 
 - Every document-changing action must be undoable. One stroke = one history
@@ -237,7 +272,10 @@ storage without updating this section and the palette-swap design.
   changes, and `applyEdit(doc, edit, 'undo' | 'redo')`. Current kinds:
   - `pixels`
   - `layer-add`, `layer-remove`, `layer-move`, `layer-props` (name, opacity)
+  - `selection`
   - `batch`, which is all-or-nothing: it rolls back if any part fails.
+    `combineEdits(label, edits)` builds one, or returns the single edit or
+    null.
 
   New kinds of change (palette edits, resize, …) become new union members
   with a case in `applyEdit`. The `assertNever` default makes a missed case a
@@ -251,6 +289,15 @@ storage without updating this section and the palette-swap design.
 - Live previews (e.g. dragging the opacity slider) mutate through
   `Editor.previewLayerOpacity`, then commit one edit on release with an
   explicit `before` value (`layerPropsEdit(doc, id, after, before)`).
+- Editor entry points:
+  - `perform(edit)` applies an unapplied edit and records it.
+  - `record(edit)` records one whose changes are already applied, e.g.
+    after a preview or a stroke.
+  - `takeStroke()` ends a stroke without recording it, so a tool can
+    combine it with other edits (Move = pixels + selection).
+- While a pointer gesture or stroke is active (`editor.busy`), undo, redo and
+  `perform` are ignored. Without this, an edit made mid-gesture would
+  interleave with the gesture's own edit.
 - `core/history.ts` `History` holds the undo/redo stacks (default limit 256).
   `push` takes an edit that is already applied and clears redo. If
   `applyEdit` throws, the stacks are left unchanged.
@@ -295,11 +342,15 @@ storage without updating this section and the palette-swap design.
   still work. To check pixel output, render synchronously first, then read
   pixels with `getImageData`:
   `pixgrind.renderer.resize(w, h); pixgrind.renderer.render(pixgrind.doc, pixgrind.viewport)`.
-- On Windows the Vite dev server occasionally misses a file change made
-  right after another edit to the same file. It then keeps serving the old
-  module, and you'll see errors like "does not provide an export named …"
-  for code that exists. Check with `fetch('/src/…')`, and restart the dev
-  server if the source is stale.
+- On Windows the Vite dev server often misses a file change made right after
+  another edit to the same file. It then keeps serving the old module, and
+  you'll see errors like "does not provide an export named …" or "X is not
+  defined" for code that exists. This has happened repeatedly. **Restart the
+  dev server before browser verification** whenever a file was edited more
+  than once in quick succession.
+- A page loaded while the pane is hidden may fit the view to a tiny stage
+  (zoom 1). Compute coordinates from `pixgrind.viewport` rather than assuming
+  a zoom level.
 
 ## Conventions
 

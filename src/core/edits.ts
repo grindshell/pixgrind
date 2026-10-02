@@ -1,5 +1,6 @@
 import type { Layer } from './layer.ts';
 import { findLayer, inBounds, layerIndex, setPixel, type PixelDocument } from './pixelDocument.ts';
+import { rectContains, type Rect } from './rect.ts';
 
 /** A pixel-level change to one layer, stored as a diff. */
 export interface PixelEdit {
@@ -56,6 +57,13 @@ export interface LayerPropsEdit {
   after: LayerProps;
 }
 
+export interface SelectionEdit {
+  kind: 'selection';
+  label: string;
+  before: Rect | null;
+  after: Rect | null;
+}
+
 /** Several edits applied as one history entry, in order on redo and in reverse on undo. */
 export interface BatchEdit {
   kind: 'batch';
@@ -67,7 +75,38 @@ export interface BatchEdit {
  * A reversible change to a document. Each kind is plain data with a case in
  * `applyEdit`; add new kinds of change here rather than as callbacks.
  */
-export type Edit = PixelEdit | LayerAddEdit | LayerRemoveEdit | LayerMoveEdit | LayerPropsEdit | BatchEdit;
+export type Edit =
+  | PixelEdit
+  | LayerAddEdit
+  | LayerRemoveEdit
+  | LayerMoveEdit
+  | LayerPropsEdit
+  | SelectionEdit
+  | BatchEdit;
+
+/** Groups edits into one history entry: null if none, the edit itself if one, else a batch. */
+export function combineEdits(label: string, edits: ReadonlyArray<Edit | null>): Edit | null {
+  const present = edits.filter((edit): edit is Edit => edit !== null);
+  if (present.length <= 1) return present[0] ?? null;
+  return { kind: 'batch', label, edits: present };
+}
+
+/**
+ * A pixel edit that sets each offset in `values` to its value, keeping only
+ * the pixels that actually change. Built unapplied. Null when nothing changes.
+ */
+export function pixelEditFromValues(layer: Layer, label: string, values: ReadonlyMap<number, number>): PixelEdit | null {
+  const changed = [...values].filter(([offset, value]) => layer.pixels[offset] !== value).sort(([a], [b]) => a - b);
+  if (changed.length === 0) return null;
+  return {
+    kind: 'pixels',
+    label,
+    layerId: layer.id,
+    offsets: Uint32Array.from(changed, ([offset]) => offset),
+    before: Uint8Array.from(changed, ([offset]) => layer.pixels[offset]),
+    after: Uint8Array.from(changed, ([, value]) => value),
+  };
+}
 
 export type EditDirection = 'undo' | 'redo';
 
@@ -105,6 +144,9 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
     }
     case 'layer-props':
       Object.assign(requireLayer(doc, edit.layerId, edit, direction), direction === 'redo' ? edit.after : edit.before);
+      return;
+    case 'selection':
+      doc.selection = direction === 'redo' ? edit.after : edit.before;
       return;
     case 'batch':
       applyBatch(doc, edit, direction);
@@ -168,7 +210,8 @@ export interface PixelEditSession {
   finish(): PixelEdit | null;
 }
 
-export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string): PixelEditSession {
+/** Starts a session. With `clip`, writes outside that rectangle are ignored (e.g. painting inside a selection). */
+export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, clip: Rect | null = null): PixelEditSession {
   const original = new Map<number, number>();
   let finished = false;
 
@@ -177,7 +220,7 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string):
 
     setPixel(x, y, index) {
       if (finished) throw new Error('Pixel edit session already finished');
-      if (!inBounds(doc, x, y)) return false;
+      if (!inBounds(doc, x, y) || (clip && !rectContains(clip, x, y))) return false;
       const offset = y * doc.width + x;
       const previous = layer.pixels[offset];
       if (!setPixel(doc, layer, x, y, index)) return false;

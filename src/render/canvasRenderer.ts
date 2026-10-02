@@ -1,10 +1,13 @@
 import { compositeRgba } from '../core/composite.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
+import type { Rect } from '../core/rect.ts';
 import type { Viewport } from './viewport.ts';
 
 const CHECKER_SIZE = 8;
 const CHECKER_LIGHT = '#3a3a44';
 const CHECKER_DARK = '#2e2e37';
+const SELECTION_LIGHT = '#ffffff';
+const SELECTION_DARK = '#000000';
 
 /** Draws a document onto a screen canvas: checkerboard backdrop, then the layer composite. */
 export class CanvasRenderer {
@@ -55,6 +58,27 @@ export class CanvasRenderer {
 
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(this.compositeCanvas(doc), offsetX, offsetY, width, height);
+
+    if (doc.selection) this.drawSelection(doc.selection, offsetX, offsetY, zoom, dpr);
+  }
+
+  /** Dashed black-on-white outline along the selection's pixel edges, one device pixel wide. */
+  private drawSelection(selection: Rect, offsetX: number, offsetY: number, zoom: number, dpr: number): void {
+    const { ctx } = this;
+    // Work in device pixels; +0.5 centers the 1px line on a pixel row so it stays sharp.
+    const left = Math.round((offsetX + selection.x * zoom) * dpr) + 0.5;
+    const top = Math.round((offsetY + selection.y * zoom) * dpr) + 0.5;
+    const right = Math.round((offsetX + (selection.x + selection.width) * zoom) * dpr) - 0.5;
+    const bottom = Math.round((offsetY + (selection.y + selection.height) * zoom) * dpr) - 0.5;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = SELECTION_LIGHT;
+    ctx.strokeRect(left, top, right - left, bottom - top);
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = SELECTION_DARK;
+    ctx.strokeRect(left, top, right - left, bottom - top);
+    ctx.restore();
   }
 
   private compositeCanvas(doc: PixelDocument): HTMLCanvasElement {

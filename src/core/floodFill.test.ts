@@ -67,6 +67,21 @@ describe('floodRegion', () => {
     expect(floodRegion(doc, doc.layers[0], 3, 2)).toHaveLength(35);
   });
 
+  it('stays inside the bounds rectangle', () => {
+    const doc = docFrom([
+      '0000',
+      '0000',
+      '0000',
+    ]);
+    const bounds = { x: 1, y: 0, width: 2, height: 2 };
+    expect(show(doc, floodRegion(doc, doc.layers[0], 1, 1, bounds))).toEqual([
+      '0##0',
+      '0##0',
+      '0000',
+    ]);
+    expect(floodRegion(doc, doc.layers[0], 0, 0, bounds)).toHaveLength(0);
+  });
+
   it('is empty outside the document', () => {
     const doc = createDocument(2, 2, palette);
     expect(floodRegion(doc, doc.layers[0], 2, 0)).toHaveLength(0);

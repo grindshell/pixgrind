@@ -1,12 +1,15 @@
 import { visibleIndexAt } from '../core/composite.ts';
-import type { PixelEditSession } from '../core/edits.ts';
+import { combineEdits, type PixelEditSession } from '../core/edits.ts';
 import { floodRegion } from '../core/floodFill.ts';
 import { TRANSPARENT } from '../core/palette.ts';
+import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, plotRect, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
+import { clipRect, rectFromCorners, translateRect } from '../core/rect.ts';
+import { movedPixels, selectionChange } from '../core/selection.ts';
 import type { Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
-export type ToolId = 'pencil' | 'eraser' | 'line' | 'rect' | 'rect-filled' | 'fill' | 'eyedropper';
+export type ToolId = 'select' | 'move' | 'pencil' | 'eraser' | 'line' | 'rect' | 'rect-filled' | 'fill' | 'eyedropper';
 
 /** Pointer position in document pixels, plus modifiers tools care about. */
 export interface ToolInput extends Point {
@@ -130,7 +133,7 @@ const fill: Tool = {
   begin(editor, start, index) {
     const { doc } = editor;
     const session = editor.beginStroke('Fill');
-    for (const offset of floodRegion(doc, session.layer, start.x, start.y)) {
+    for (const offset of floodRegion(doc, session.layer, start.x, start.y, doc.selection)) {
       session.setPixel(offset % doc.width, Math.floor(offset / doc.width), index);
     }
     editor.requestRender();
@@ -155,8 +158,89 @@ const eyedropper: Tool = {
   },
 };
 
+/**
+ * Rectangle marquee. Dragging selects the spanned pixels (clipped to the
+ * document); clicking without dragging deselects.
+ */
+const select: Tool = {
+  id: 'select',
+  label: 'Rectangle select',
+  icon: 'select',
+  shortcut: 'm',
+  paints: false,
+  begin(editor, start) {
+    const { doc } = editor;
+    const before = doc.selection;
+    let dragged = false;
+    return {
+      move(input) {
+        dragged = true;
+        editor.previewSelection(clipRect(rectFromCorners(start, input), doc.width, doc.height));
+      },
+      end() {
+        if (!dragged) editor.previewSelection(null);
+        const after = doc.selection;
+        editor.record(selectionChange(before, after, after ? 'Select' : 'Deselect'));
+      },
+    };
+  },
+};
+
+/**
+ * Drags the selected pixels of the active layer (the whole layer when
+ * nothing is selected), and the selection with them. Shift locks to one axis.
+ * Pixels dragged off the canvas are dropped on release.
+ */
+const move: Tool = {
+  id: 'move',
+  label: 'Move',
+  icon: 'move',
+  shortcut: 'v',
+  paints: true,
+  begin(editor, start) {
+    const { doc } = editor;
+    const original = doc.selection;
+    const area = original ?? documentRect(doc);
+    // Not clipped: moved pixels may land outside the original selection.
+    const session = editor.beginStroke('Move', { clipToSelection: false });
+
+    return {
+      move(input) {
+        let dx = input.x - start.x;
+        let dy = input.y - start.y;
+        if (input.shift) {
+          if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+          else dx = 0;
+        }
+        // Recompute from the untouched original each time, so dragging past
+        // the edge and back loses nothing until release.
+        session.revert();
+        for (const [offset, value] of movedPixels(doc, session.layer, area, dx, dy)) {
+          session.setPixel(offset % doc.width, Math.floor(offset / doc.width), value);
+        }
+        if (original) editor.previewSelection(clipRect(translateRect(original, dx, dy), doc.width, doc.height));
+        editor.requestRender();
+      },
+      end() {
+        const pixels = editor.takeStroke();
+        editor.record(combineEdits('Move', [pixels, selectionChange(original, doc.selection, 'Move')]));
+      },
+    };
+  },
+};
+
 /** Toolbar order. */
-export const TOOLS: readonly Tool[] = [pencil, eraser, line, rectangle(false), rectangle(true), fill, eyedropper];
+export const TOOLS: readonly Tool[] = [
+  select,
+  move,
+  pencil,
+  eraser,
+  line,
+  rectangle(false),
+  rectangle(true),
+  fill,
+  eyedropper,
+];
 
 export function getTool(id: ToolId): Tool {
   const tool = TOOLS.find((t) => t.id === id);

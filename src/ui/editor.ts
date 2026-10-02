@@ -1,7 +1,8 @@
-import { applyEdit, beginPixelEdit, type Edit, type PixelEditSession } from '../core/edits.ts';
+import { applyEdit, beginPixelEdit, type Edit, type PixelEdit, type PixelEditSession } from '../core/edits.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import { findLayer, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
+import type { Rect } from '../core/rect.ts';
 import { CanvasRenderer } from '../render/canvasRenderer.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
@@ -30,6 +31,7 @@ export class Editor {
   /** Last known position of the active layer; used to pick a neighbor if it disappears. */
   private activeIndexHint = 0;
   private stroke: PixelEditSession | null = null;
+  private gestureActive = false;
   private renderQueued = false;
   private readonly listeners = new Set<() => void>();
 
@@ -66,10 +68,12 @@ export class Editor {
     this.notify();
   }
 
-  /** Applies an edit and records it in history. No-op for null (constructors return null for "no change"). */
+  /**
+   * Applies an edit and records it in history. No-op for null (constructors
+   * return null for "no change") and while a gesture is in progress.
+   */
   perform(edit: Edit | null): void {
-    if (!edit) return;
-    this.endStroke();
+    if (!edit || this.busy) return;
     applyEdit(this.doc, edit, 'redo');
     this.history.push(edit);
     this.documentChanged();
@@ -99,34 +103,63 @@ export class Editor {
   }
 
   /**
+   * Live selection preview (e.g. while dragging a marquee or a move). Not
+   * recorded: follow up with `record(selectionChange(before, after, label))`.
+   */
+  previewSelection(selection: Rect | null): void {
+    this.doc.selection = selection;
+    this.requestRender();
+  }
+
+  /**
    * Starts recording pixel writes to the active layer as one undoable edit.
    * All UI pixel writes must go through a stroke so they land in history.
+   * Writes are clipped to the selection unless `clipToSelection` is false.
    */
-  beginStroke(label: string): PixelEditSession {
+  beginStroke(label: string, { clipToSelection = true } = {}): PixelEditSession {
     this.endStroke();
-    this.stroke = beginPixelEdit(this.doc, this.activeLayer, label);
+    this.stroke = beginPixelEdit(this.doc, this.activeLayer, label, clipToSelection ? this.doc.selection : null);
     return this.stroke;
   }
 
   /** Commits the current stroke, if any, to history. */
   endStroke(): void {
-    if (!this.stroke) return;
+    this.record(this.takeStroke());
+  }
+
+  /** Ends the current stroke and returns its edit without recording it, for combining with other edits. */
+  takeStroke(): PixelEdit | null {
+    if (!this.stroke) return null;
     const edit = this.stroke.finish();
     this.stroke = null;
-    if (edit) {
-      this.history.push(edit);
-      this.notify();
-    }
+    return edit;
+  }
+
+  /** Records an edit whose changes are already applied (strokes, previews). No-op for null. */
+  record(edit: Edit | null): void {
+    if (!edit) return;
+    this.history.push(edit);
+    this.documentChanged();
+  }
+
+  /** Whether a pointer gesture or stroke is in progress; undo/redo and `perform` wait until it ends. */
+  get busy(): boolean {
+    return this.stroke !== null || this.gestureActive;
+  }
+
+  /** Set by canvas input around tool gestures that don't use a stroke (e.g. marquee). */
+  setGestureActive(active: boolean): void {
+    this.gestureActive = active;
   }
 
   undo(): void {
-    // Undoing underneath an in-progress stroke would interleave the two edits.
-    if (this.stroke || !this.history.undo(this.doc)) return;
+    // Undoing underneath an in-progress gesture would interleave the two edits.
+    if (this.busy || !this.history.undo(this.doc)) return;
     this.documentChanged();
   }
 
   redo(): void {
-    if (this.stroke || !this.history.redo(this.doc)) return;
+    if (this.busy || !this.history.redo(this.doc)) return;
     this.documentChanged();
   }
 

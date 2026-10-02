@@ -1,5 +1,16 @@
+import { clearSelection, deselect, nudge, selectAll } from './commands.ts';
 import type { Editor } from './editor.ts';
 import { TOOLS } from './tools.ts';
+
+const ARROWS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
+
+/** Pixels per arrow-key nudge with Shift held. */
+const BIG_NUDGE = 10;
 
 /** Global keyboard shortcuts. Ctrl and Cmd are interchangeable. */
 export function attachShortcuts(target: Window, editor: Editor): void {
@@ -8,13 +19,32 @@ export function attachShortcuts(target: Window, editor: Editor): void {
 
     if (e.ctrlKey || e.metaKey) {
       const key = e.key.toLowerCase();
-      if (key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        editor.undo();
-      } else if ((key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey)) {
-        e.preventDefault();
-        editor.redo();
-      }
+      if (key === 'z' && !e.shiftKey) editor.undo();
+      else if ((key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey)) editor.redo();
+      else if (key === 'a' && !e.shiftKey) selectAll(editor);
+      else if (key === 'd' && !e.shiftKey) deselect(editor);
+      else return;
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      deselect(editor);
+      return;
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      clearSelection(editor);
+      return;
+    }
+
+    const arrow = ARROWS[e.key];
+    if (arrow) {
+      // Arrows nudge only with the Move tool, so they stay free for focused controls otherwise.
+      if (editor.tool !== 'move') return;
+      e.preventDefault();
+      const step = e.shiftKey ? BIG_NUDGE : 1;
+      nudge(editor, arrow[0] * step, arrow[1] * step);
       return;
     }
 

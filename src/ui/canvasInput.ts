@@ -37,6 +37,7 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       if (tool.paints && !editor.activeLayer.visible) return;
       const input = toolInput(e);
       const index = e.button === BUTTON_SECONDARY ? TRANSPARENT : editor.primaryIndex;
+      editor.setGestureActive(true);
       gesture = { kind: 'tool', pointerId: e.pointerId, tool: tool.begin(editor, input, index), last: input };
     } else {
       return;
@@ -70,7 +71,10 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
     if (gesture?.pointerId !== e.pointerId) return;
     const ended = gesture;
     gesture = null;
-    if (ended.kind === 'tool') ended.tool.end();
+    if (ended.kind === 'tool') {
+      editor.setGestureActive(false);
+      ended.tool.end();
+    }
   };
   canvas.addEventListener('pointerup', endGesture);
   canvas.addEventListener('pointercancel', endGesture);
