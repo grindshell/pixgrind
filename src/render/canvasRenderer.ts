@@ -1,6 +1,7 @@
 import { compositeRgba } from '../core/composite.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
 import type { Rect } from '../core/rect.ts';
+import type { ReferenceImage } from './referenceImage.ts';
 import type { Viewport } from './viewport.ts';
 
 const CHECKER_SIZE = 8;
@@ -9,7 +10,7 @@ const CHECKER_DARK = '#2e2e37';
 const SELECTION_LIGHT = '#ffffff';
 const SELECTION_DARK = '#000000';
 
-/** Draws a document onto a screen canvas: checkerboard backdrop, then the layer composite. */
+/** Draws a document onto a screen canvas: checkerboard backdrop, reference image, layer composite, selection. */
 export class CanvasRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -43,7 +44,8 @@ export class CanvasRenderer {
     this.canvas.height = Math.max(1, Math.round(cssHeight * dpr));
   }
 
-  render(doc: PixelDocument, viewport: Viewport): void {
+  /** Draws checkerboard, reference (if below), artwork, reference (if above), then the selection outline. */
+  render(doc: PixelDocument, viewport: Viewport, reference: ReferenceImage | null = null): void {
     const { ctx } = this;
     const dpr = this.canvas.width / Math.max(1, this.cssWidth);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -61,10 +63,41 @@ export class CanvasRenderer {
     ctx.fillStyle = this.checker;
     ctx.fillRect(offsetX, offsetY, width, height);
 
+    const shownReference = reference?.visible && reference.opacity > 0 ? reference : null;
+    if (shownReference && !shownReference.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
+
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(this.compositeCanvas(doc), offsetX, offsetY, width, height);
 
+    if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
     if (doc.selection) this.drawSelection(doc.selection, offsetX, offsetY, zoom, dpr);
+  }
+
+  /** The reference, clipped to the document area so it never spills over the stage. */
+  private drawReference(
+    reference: ReferenceImage,
+    offsetX: number,
+    offsetY: number,
+    docWidth: number,
+    docHeight: number,
+    zoom: number,
+  ): void {
+    const { ctx } = this;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(offsetX, offsetY, docWidth, docHeight);
+    ctx.clip();
+    ctx.globalAlpha = reference.opacity;
+    ctx.imageSmoothingEnabled = reference.smooth;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(
+      reference.bitmap,
+      offsetX + reference.x * zoom,
+      offsetY + reference.y * zoom,
+      reference.width * reference.scale * zoom,
+      reference.height * reference.scale * zoom,
+    );
+    ctx.restore();
   }
 
   /** Dashed black-on-white outline along the selection's pixel edges, one device pixel wide. */

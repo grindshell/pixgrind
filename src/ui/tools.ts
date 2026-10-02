@@ -5,14 +5,27 @@ import { TRANSPARENT } from '../core/palette.ts';
 import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, plotRect, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { clipRect, rectFromCorners, translateRect } from '../core/rect.ts';
+import { scaleAround } from '../core/referencePlacement.ts';
 import { movedPixels, selectionChange } from '../core/selection.ts';
 import type { Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
-export type ToolId = 'select' | 'move' | 'pencil' | 'eraser' | 'line' | 'rect' | 'rect-filled' | 'fill' | 'eyedropper';
+export type ToolId =
+  | 'select'
+  | 'move'
+  | 'pencil'
+  | 'eraser'
+  | 'line'
+  | 'rect'
+  | 'rect-filled'
+  | 'fill'
+  | 'eyedropper'
+  | 'reference';
 
 /** Pointer position in document pixels, plus modifiers tools care about. */
 export interface ToolInput extends Point {
+  /** Exact (fractional) document coordinates, for tools that don't work in whole pixels. */
+  exact: Point;
   /** Constrains shapes: lines to 45° steps, rectangles to squares. */
   shift: boolean;
 }
@@ -28,14 +41,20 @@ export interface Tool {
   label: string;
   icon: IconName;
   /** Single-key shortcut, as `KeyboardEvent.key` reports it (so "R" means Shift+R). */
-  shortcut: string;
+  shortcut?: string;
+  /** Not shown in the tool strip; activated from elsewhere (e.g. the reference panel). */
+  hidden?: boolean;
   /** Whether the tool writes pixels. Painting tools are blocked on hidden layers. */
   paints: boolean;
+  /** Receive every pointer move, not just moves to a new pixel. */
+  continuous?: boolean;
   /**
    * Starts a gesture. `index` is the palette index for the pressed button:
    * the primary color for the left button, transparent for the right.
    */
   begin(editor: Editor, input: ToolInput, index: number): ToolGesture;
+  /** Handles the mouse wheel instead of zooming (Ctrl+wheel still zooms). */
+  wheel?(editor: Editor, input: ToolInput, direction: 1 | -1): void;
 }
 
 /** Freehand drawing; consecutive pointer positions are joined with lines so fast strokes have no gaps. */
@@ -229,7 +248,44 @@ const move: Tool = {
   },
 };
 
-/** Toolbar order. */
+/** Each wheel step scales the reference by this factor. */
+const REFERENCE_WHEEL_STEP = 1.1;
+
+/**
+ * Positions the reference image: drag to move it, wheel to scale it around
+ * the pointer. Works in exact coordinates so alignment isn't limited to
+ * whole pixels. Activated from the reference panel.
+ */
+const reference: Tool = {
+  id: 'reference',
+  label: 'Move reference',
+  icon: 'image',
+  hidden: true,
+  paints: false,
+  continuous: true,
+  begin(editor, start) {
+    const ref = editor.reference;
+    if (!ref) return { move() {}, end() {} };
+    const origin = { x: ref.x, y: ref.y };
+    return {
+      move(input) {
+        editor.updateReference(
+          { x: origin.x + input.exact.x - start.exact.x, y: origin.y + input.exact.y - start.exact.y },
+          { silent: true },
+        );
+      },
+      end: () => editor.updateReference({}),
+    };
+  },
+  wheel(editor, input, direction) {
+    const ref = editor.reference;
+    if (!ref) return;
+    const factor = direction > 0 ? REFERENCE_WHEEL_STEP : 1 / REFERENCE_WHEEL_STEP;
+    editor.updateReference(scaleAround(ref, ref.scale * factor, input.exact.x, input.exact.y));
+  },
+};
+
+/** Toolbar order. Hidden tools are last. */
 export const TOOLS: readonly Tool[] = [
   select,
   move,
@@ -240,6 +296,7 @@ export const TOOLS: readonly Tool[] = [
   rectangle(true),
   fill,
   eyedropper,
+  reference,
 ];
 
 export function getTool(id: ToolId): Tool {

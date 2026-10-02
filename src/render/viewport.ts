@@ -14,14 +14,23 @@ export function clampZoom(zoom: number): number {
 }
 
 /**
+ * Screen → exact (fractional) document coordinates. For things that aren't
+ * pixels, like positioning a reference image.
+ */
+export function screenToDocument(viewport: Viewport, screenX: number, screenY: number): { x: number; y: number } {
+  return {
+    x: (screenX - viewport.offsetX) / viewport.zoom,
+    y: (screenY - viewport.offsetY) / viewport.zoom,
+  };
+}
+
+/**
  * Screen → document pixel coordinates. This is the only place that conversion
  * should happen; the result is always integer.
  */
 export function screenToPixel(viewport: Viewport, screenX: number, screenY: number): { x: number; y: number } {
-  return {
-    x: Math.floor((screenX - viewport.offsetX) / viewport.zoom),
-    y: Math.floor((screenY - viewport.offsetY) / viewport.zoom),
-  };
+  const { x, y } = screenToDocument(viewport, screenX, screenY);
+  return { x: Math.floor(x), y: Math.floor(y) };
 }
 
 /** The largest integer zoom that fits the document in the view, centered. */

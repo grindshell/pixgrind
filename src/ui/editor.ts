@@ -5,6 +5,7 @@ import type { Layer } from '../core/layer.ts';
 import { findLayer, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Rect } from '../core/rect.ts';
 import { CanvasRenderer } from '../render/canvasRenderer.ts';
+import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
 import { el } from './dom.ts';
@@ -13,6 +14,7 @@ import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
 import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
+import { createReferencePanel } from './referencePanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
 import { createToolbar } from './toolbar.ts';
 import { getTool, type ToolId } from './tools.ts';
@@ -30,6 +32,8 @@ export class Editor {
   tool: ToolId = 'pencil';
   /** Palette index the primary (left) button paints with. */
   primaryIndex = 1;
+  /** Tracing guide shown with the artwork; never part of the document. Change via `setReference`/`updateReference`. */
+  reference: ReferenceImage | null = null;
   private activeLayerId: string;
   /** Last known position of the active layer; used to pick a neighbor if it disappears. */
   private activeIndexHint = 0;
@@ -72,6 +76,27 @@ export class Editor {
     if (this.tool === tool) return;
     this.tool = tool;
     this.notify();
+  }
+
+  /**
+   * Sets or clears the reference image. Like layer visibility, reference
+   * changes aren't undoable: adjusting a tracing guide shouldn't consume undo
+   * steps.
+   */
+  setReference(reference: ReferenceImage | null): void {
+    if (this.reference && this.reference !== reference) this.reference.bitmap.close();
+    this.reference = reference;
+    if (!reference && this.tool === 'reference') this.tool = 'pencil';
+    this.requestRender();
+    this.notify();
+  }
+
+  /** Changes reference settings. `silent` skips listeners, for per-pointer-move updates. */
+  updateReference(settings: Partial<ReferenceSettings>, { silent = false } = {}): void {
+    if (!this.reference) return;
+    Object.assign(this.reference, settings);
+    this.requestRender();
+    if (!silent) this.notify();
   }
 
   /**
@@ -191,7 +216,7 @@ export class Editor {
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
-      this.renderer.render(this.doc, this.viewport);
+      this.renderer.render(this.doc, this.viewport, this.reference);
     });
   }
 
@@ -247,6 +272,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
     createFilePanel(editor, stage),
     createPalettePanel(editor),
     createPaletteLibraryPanel(editor, openPaletteLibrary()),
+    createReferencePanel(editor),
     createLayersPanel(editor),
   );
   layout.append(sidebar, createToolbar(editor), stage);
@@ -254,9 +280,12 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   attachCanvasInput(canvas, editor);
   attachShortcuts(window, editor);
 
-  // Hidden layers can't be painted on; show that with the cursor.
-  const syncStageLock = () =>
+  // Hidden layers can't be painted on; show that with the cursor. The tool id
+  // lets CSS pick a cursor per tool.
+  const syncStageLock = () => {
     stage.classList.toggle('is-locked', !editor.activeLayer.visible && getTool(editor.tool).paints);
+    stage.dataset.tool = editor.tool;
+  };
   editor.onChange(syncStageLock);
   syncStageLock();
 

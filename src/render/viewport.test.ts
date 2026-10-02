@@ -4,6 +4,7 @@ import {
   fitViewport,
   MAX_ZOOM,
   MIN_ZOOM,
+  screenToDocument,
   screenToPixel,
   stepZoom,
   zoomAt,
@@ -21,6 +22,10 @@ describe('screenToPixel', () => {
 
   it('floors to negative pixels left of and above the document', () => {
     expect(screenToPixel(vp, 99, 49)).toEqual({ x: -1, y: -1 });
+  });
+
+  it('screenToDocument gives the unfloored position', () => {
+    expect(screenToDocument(vp, 115, 52.5)).toEqual({ x: 1.5, y: 0.25 });
   });
 });
 

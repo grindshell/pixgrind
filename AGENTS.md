@@ -55,13 +55,20 @@ Built so far:
     canvas), using either the image's own colors or the current palette.
   - Add an image as a layer.
   - Export PNG/JPEG/WebP at 1–16×.
+- Reference panel: load an image of any size as a tracing guide, fitted to
+  the canvas.
+  - Show/hide, above/below the artwork, smoothing, opacity, scale (with
+    Fit), and remove.
+  - Move mode: drag to position it and wheel to scale it around the pointer.
+  - Never part of pixel data or exports, and not undoable.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y.
 - Layers panel: thumbnails, select, show/hide, rename (double-click), add,
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 
-Not built yet, roughly in priority order: reference images, project files.
+Not built yet: project files (save/load `.pixgrind`, including the
+reference image).
 Follow-ups:
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
@@ -139,7 +146,8 @@ src/
                  ↔ indices, upscale, flatten), edits (undoable changes),
                  layerEdits / selection / paletteEdits / documentEdits (edit
                  constructors), history
-  render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
+  render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer,
+                 ReferenceImage type
   io/            import/export and persistence: paletteFormats (pure text
                  parsers/serializers), paletteLibrary (saved palettes over a
                  storage interface), imageCodec (decode/encode via canvas),
@@ -149,7 +157,8 @@ src/
                  commands (non-pointer actions like select all, nudge),
                  fileCommands (open/add/export image), keyboard shortcuts,
                  history controls, file panel, palette and palettes (library)
-                 panels, layers panel, DOM helpers (dom.ts) and inline SVG
+                 panels, layers panel, reference panel (+ loadReferenceFile),
+                 DOM helpers (dom.ts) and inline SVG
                  icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
 ```
@@ -246,9 +255,36 @@ storage without updating this section and the palette-swap design.
   opacity, because palette indices can't blend. The upper layer's
   non-transparent pixels replace the lower layer's. A translucent palette
   color therefore replaces what was under it instead of blending with it.
-- The reference image is **not** a layer: it is drawn under (or optionally
-  over) the composite, has its own opacity/position/scale, and is excluded from
-  export and from pixel data.
+- The reference image is **not** a layer. See Reference images below.
+
+### Reference images
+
+- Editor state (`editor.reference: ReferenceImage | null`), not document
+  state, so it never touches pixel data, compositing, exports or history.
+  Change it only through `Editor.setReference` / `updateReference`.
+  `setReference` closes the old `ImageBitmap`. `updateReference(…, { silent:
+  true })` skips listeners for per-pointer-move updates.
+- `ReferenceImage` (`render/referenceImage.ts`):
+  - The decoded `bitmap` for drawing, plus the original `source` Blob so
+    project files can embed it.
+  - Image size, and placement in **document coordinates**: `x`/`y` of the
+    top-left and `scale` in document px per image px. These are fractional,
+    since references are guides rather than pixels.
+  - `opacity`, `visible`, `above`, `smooth`.
+
+  Placement math is pure, in `core/referencePlacement.ts`: fit, scale around
+  an anchor, center, and the logarithmic slider mapping. Scale is clamped to
+  0.01–64.
+- Rendering order: checkerboard, then the reference if below, then artwork,
+  then the reference if above, then the selection. The reference is clipped
+  to the document rect and drawn with `globalAlpha` and its own smoothing
+  setting (on by default for photos). Artwork smoothing stays off.
+- Move mode is a hidden tool (`reference`) toggled from the panel.
+  - It's `continuous`, so it gets every pointer move, not just
+    pixel-to-pixel ones, and uses the exact (fractional) coordinates in
+    `ToolInput.exact`.
+  - Its `wheel` handler scales around the pointer; Ctrl+wheel still zooms.
+  - Removing the reference returns to the pencil.
 
 ### Rendering
 
@@ -282,6 +318,12 @@ storage without updating this section and the palette-swap design.
   - `shortcut` is matched case-sensitively against `KeyboardEvent.key`, so
     `"R"` means Shift+R.
   - The `TOOLS` array order is the toolbar order.
+  - Optional:
+    - `hidden` keeps a tool out of the strip (activated elsewhere).
+    - `continuous` forwards every pointer move.
+    - `wheel` takes over the mouse wheel.
+    - `ToolInput.exact` has the fractional document position; `x`/`y` are
+      the floored pixel.
 
   To add a tool: write the object, add its id to `ToolId`, add an icon in
   `ui/icons.ts`, and put it in `TOOLS`. Keep geometry in `core/`.
@@ -320,9 +362,11 @@ storage without updating this section and the palette-swap design.
 ### Undo/redo
 
 - Every document-changing action must be undoable. One stroke = one history
-  entry. **Exception:** layer visibility is not undoable, as in most pixel
-  art editors: toggling it to compare shouldn't consume undo steps. It goes
-  through `Editor.setLayerVisible`.
+  entry. **Exceptions:**
+  - Layer visibility (through `Editor.setLayerVisible`) and reference image
+    settings are not undoable, as in most pixel art editors. Toggling or
+    adjusting them to compare shouldn't consume undo steps.
+  - The reference isn't part of the document at all.
 - `core/edits.ts` defines `Edit`, a discriminated union of plain-data
   changes, and `applyEdit(doc, edit, 'undo' | 'redo')`. Current kinds:
   - `pixels`
@@ -405,7 +449,9 @@ storage without updating this section and the palette-swap design.
 ### Project files (planned)
 
 - `.pixgrind` JSON with a `version` field, name, dimensions, palette, and
-  layers (pixel data base64-encoded). Optionally embed the reference image.
+  layers (pixel data base64-encoded). Optionally embed the reference image:
+  its `source` Blob (base64) plus placement and settings. Re-decode it on
+  load.
   Bump `version` and add a migration when the schema changes. Selection is
   not saved.
 
@@ -450,6 +496,9 @@ storage without updating this section and the palette-swap design.
   ResizeObserver never fires, so `fitToView` does nothing. Call
   `pixgrind.renderer.resize(w, h)` with the stage size first when checking
   zoom.
+- Synthetic `MouseEvent`/`WheelEvent`s round `clientX`/`clientY` to integers
+  (`PointerEvent` keeps fractions). When asserting exact positions after a
+  wheel event, compute from the event's own coordinates.
 
 ## Conventions
 

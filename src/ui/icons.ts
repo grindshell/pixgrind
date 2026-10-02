@@ -16,6 +16,7 @@ const ICONS = {
   fill: '<path d="M7.5 2.5l5 5-5 5-5-5zM2.5 7.5h10M14 11s1 1.4 1 2.1a1 1 0 0 1-2 0c0-.7 1-2.1 1-2.1z"/>',
   select: '<rect x="2.5" y="2.5" width="11" height="11" stroke-dasharray="2 2"/>',
   move: '<path d="M8 1.5v13M1.5 8h13M6 3.5l2-2 2 2M6 12.5l2 2 2-2M3.5 6l-2 2 2 2M12.5 6l2 2-2 2"/>',
+  image: '<rect x="2" y="3" width="12" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2.5 12l4-4 3 3 2-2 2.5 2.5"/>',
   eyedropper:
     '<path d="M10.5 3a1.6 1.6 0 0 1 2.5 2.5l-1.5 1.5-2.5-2.5zM9.5 5l-6 6-.5 2 2-.5 6-6M8.5 4l3.5 3.5"/>',
 } as const;

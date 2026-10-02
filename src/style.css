@@ -214,6 +214,61 @@ body,
   display: none;
 }
 
+.stage[data-tool='reference'] .stage-canvas {
+  cursor: move;
+}
+
+.checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.checkbox input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.checkbox:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
+.slider-label {
+  flex: none;
+  width: 50px;
+}
+
+.slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.slider-value {
+  flex: none;
+  width: 4.5ch;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.button[aria-pressed='true'] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 .stage.is-drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -6px;

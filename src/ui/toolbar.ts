@@ -1,15 +1,14 @@
 import { el, iconButton } from './dom.ts';
 import type { Editor } from './editor.ts';
-import { TOOLS } from './tools.ts';
+import { TOOLS, type Tool } from './tools.ts';
 
-/** Vertical tool strip beside the canvas. */
+/** Vertical tool strip beside the canvas. Hidden tools (e.g. the reference tool) are activated elsewhere. */
 export function createToolbar(editor: Editor): HTMLElement {
   const bar = el('nav', 'tool-strip');
   bar.setAttribute('aria-label', 'Tools');
 
-  const buttons = TOOLS.map((tool) => {
-    const shortcut = tool.shortcut === tool.shortcut.toLowerCase() ? tool.shortcut.toUpperCase() : `Shift+${tool.shortcut}`;
-    const button = iconButton(tool.icon, `${tool.label} (${shortcut})`, () => editor.setTool(tool.id));
+  const buttons = TOOLS.filter((tool) => !tool.hidden).map((tool) => {
+    const button = iconButton(tool.icon, toolLabel(tool), () => editor.setTool(tool.id));
     button.classList.add('tool-button');
     return { tool, button };
   });
@@ -22,4 +21,11 @@ export function createToolbar(editor: Editor): HTMLElement {
   render();
   bar.append(...buttons.map(({ button }) => button));
   return bar;
+}
+
+/** "Pencil (B)", "Filled rectangle (Shift+R)". */
+function toolLabel({ label, shortcut }: Tool): string {
+  if (!shortcut) return label;
+  const keys = shortcut === shortcut.toLowerCase() ? shortcut.toUpperCase() : `Shift+${shortcut}`;
+  return `${label} (${keys})`;
 }
