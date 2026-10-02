@@ -50,14 +50,18 @@ Built so far:
   - Save, delete saved (two-click confirm).
   - Import/export `.hex`, `.gpl`, `.pal` and PNG swatches.
 - All palette changes are undoable; the library itself is not.
+- File panel:
+  - Open an image as the document (undoable; also by dropping it on the
+    canvas), using either the image's own colors or the current palette.
+  - Add an image as a layer.
+  - Export PNG/JPEG/WebP at 1–16×.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y.
 - Layers panel: thumbnails, select, show/hide, rename (double-click), add,
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 
-Not built yet, roughly in priority order: image import/export, reference
-images, project files.
+Not built yet, roughly in priority order: reference images, project files.
 Follow-ups:
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
@@ -131,19 +135,22 @@ src/
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
                  composite (+ visibleIndexAt), raster (line, rect, shape
-                 constraints), rect (Rect geometry), floodFill, edits
-                 (undoable changes), layerEdits / selection / paletteEdits
-                 (edit constructors), history
+                 constraints), rect (Rect geometry), floodFill, image (RGBA
+                 ↔ indices, upscale, flatten), edits (undoable changes),
+                 layerEdits / selection / paletteEdits / documentEdits (edit
+                 constructors), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
   io/            import/export and persistence: paletteFormats (pure text
                  parsers/serializers), paletteLibrary (saved palettes over a
-                 storage interface), paletteImage (PNG swatches, DOM), files
-                 (download, file picker, file names)
+                 storage interface), imageCodec (decode/encode via canvas),
+                 paletteImage (PNG swatches), files (download, file picker,
+                 file names)
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
-                 keyboard shortcuts, history controls, palette and palettes
-                 (library) panels, layers panel, DOM helpers (dom.ts) and
-                 inline SVG icons (icons.ts)
+                 fileCommands (open/add/export image), keyboard shortcuts,
+                 history controls, file panel, palette and palettes (library)
+                 panels, layers panel, DOM helpers (dom.ts) and inline SVG
+                 icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
 ```
 
@@ -322,6 +329,7 @@ storage without updating this section and the palette-swap design.
   - `layer-add`, `layer-remove`, `layer-move`, `layer-props` (name, opacity)
   - `palette`
   - `selection`
+  - `document` (replaces everything; e.g. opening an image)
   - `batch`, which is all-or-nothing: it rolls back if any part fails.
     `combineEdits(label, edits)` builds one, or returns the single edit or
     null.
@@ -357,21 +365,49 @@ storage without updating this section and the palette-swap design.
 - Strokes that change nothing (or end up back at the original values) don't
   create entries. Undo/redo are ignored while a stroke is in progress.
 
-### Import/export (planned)
+### Image import/export
 
-- Image import: decode with `createImageBitmap` → `ImageData`. Importing as
-  artwork requires quantizing to the palette: either map to the nearest palette
-  colors or build a palette from the image's unique colors (error clearly if
-  more than 255).
-- Image export: flatten visible layers (`compositeRgba`), optional integer
-  upscale (1×, 2×, 4×…, nearest-neighbor), then `canvas.toBlob`.
-  - PNG: default; lossless, keeps transparency.
-  - JPG: no alpha, so flatten onto a user-chosen background color; it is lossy
-    and adds artifacts, so export at max quality and say so in the UI.
-  - WebP: export losslessly when supported.
-- Project format: `.pixgrind` JSON with a `version` field, dimensions, palette,
-  and layers (pixel data base64-encoded). Optionally embed the reference image.
-  Bump `version` and add a migration when the schema changes.
+- Layering: pure conversions live in `core/image.ts` (`RgbaImage`, indexing,
+  upscale, flatten) and `core/documentEdits.ts` (edits). Browser decode and
+  encode live in `io/imageCodec.ts`. The commands in `ui/fileCommands.ts` take
+  `File`s rather than opening pickers, so drag-and-drop and tests call them
+  directly.
+- Decode: `createImageBitmap` with `colorSpaceConversion: 'none'` and
+  `premultiplyAlpha: 'none'`, so colors come out exactly as stored.
+- **Open image** (`openImageEdit`) replaces the whole document through a
+  `document` edit (a before/after `DocumentState`), so it is undoable and
+  nothing is lost without a prompt. Two color modes:
+  - `image`: the image's distinct colors become the palette (exact; more than
+    255 colors is an error).
+  - `palette`: nearest colors of the current palette (`indexImageToPalette`).
+
+  Fully transparent pixels become index 0. Documents are capped at
+  `MAX_DOCUMENT_SIZE` (1024) per side. Dropping an image file on the stage
+  opens it with the panel's color mode.
+- **Add as layer** (`importImageLayerEdit`): nearest current-palette colors,
+  placed at the top-left, cropped to the document. It's a `layer-add` edit.
+- When the document size changes (open, or undoing one), the editor refits
+  the view (`Editor.fitToView`). `doc.name` (from the file name) drives export
+  file names and the window title.
+- Export (`renderExport`):
+  - Flatten the visible layers (`documentImage`), then `upscaleImage`
+    (integer nearest-neighbor, 1–16×), then `encodeImage`.
+  - PNG is lossless with alpha. JPEG is flattened onto a chosen background
+    (`flattenImage`) at quality 1, and the UI warns it's lossy. WebP is
+    encoded at quality 1, which Chromium makes lossless.
+  - `encodeImage` rejects when the browser silently substitutes another
+    format (Safari WebP), and when an image exceeds `MAX_EXPORT_SIZE` (8192)
+    per side.
+  - File names are `<name>[@<scale>x].<ext>`.
+- Not built yet: export of the selection only, a "new document / canvas size"
+  dialog, GIF/animated formats.
+
+### Project files (planned)
+
+- `.pixgrind` JSON with a `version` field, name, dimensions, palette, and
+  layers (pixel data base64-encoded). Optionally embed the reference image.
+  Bump `version` and add a migration when the schema changes. Selection is
+  not saved.
 
 ## Verifying in the browser
 
@@ -400,11 +436,20 @@ storage without updating this section and the palette-swap design.
 - A page loaded while the pane is hidden may fit the view to a tiny stage
   (zoom 1). Compute coordinates from `pixgrind.viewport` rather than assuming
   a zoom level.
-- Don't trigger real downloads or file pickers from automation. Check
-  exports by calling the encoders directly (e.g.
-  `await import('/src/io/paletteImage.ts')` and round-trip `paletteToPng`
-  through `paletteFromImageFile`). Text formats are covered by unit tests.
-  Remove any test data saved to `localStorage` afterwards.
+- Don't trigger real downloads or file pickers from automation:
+  - Check exports by calling the encoders directly, e.g.
+    `await import('/src/ui/fileCommands.ts')` and decode `renderExport(...)`
+    with `decodeImage`, or round-trip `paletteToPng` through
+    `paletteFromImageFile`.
+  - Test opening images by dispatching `dragover` and `drop` on `.stage` with
+    a `DataTransfer` holding a `File` (build one with `encodeImage`), or call
+    `openImageFile` / `addImageLayer` directly.
+  - Text formats are covered by unit tests.
+  - Remove any test data saved to `localStorage` afterwards.
+- While the pane is hidden, `editor.renderer.viewSize` can stay 0×0 because
+  ResizeObserver never fires, so `fitToView` does nothing. Call
+  `pixgrind.renderer.resize(w, h)` with the stage size first when checking
+  zoom.
 
 ## Conventions
 

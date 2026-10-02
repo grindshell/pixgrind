@@ -29,6 +29,11 @@ export class CanvasRenderer {
     this.checker = createChecker(this.ctx);
   }
 
+  /** The canvas's CSS size as of the last `resize`. */
+  get viewSize(): { width: number; height: number } {
+    return { width: this.cssWidth, height: this.cssHeight };
+  }
+
   /** Matches the backing store to the canvas's CSS size and device pixel ratio. */
   resize(cssWidth: number, cssHeight: number): void {
     const dpr = window.devicePixelRatio || 1;

@@ -58,6 +58,40 @@ export interface LayerPropsEdit {
   after: LayerProps;
 }
 
+/** Everything that makes up a document, for edits that replace it wholesale. */
+export interface DocumentState {
+  name: string;
+  width: number;
+  height: number;
+  palette: Palette;
+  /** Layer objects are held by reference, as in layer add/remove edits. */
+  layers: Layer[];
+  selection: Rect | null;
+}
+
+/**
+ * Replaces the whole document (e.g. opening an image), so even that can be
+ * undone instead of discarding work.
+ */
+export interface DocumentEdit {
+  kind: 'document';
+  label: string;
+  before: DocumentState;
+  after: DocumentState;
+}
+
+/** A snapshot of the document's current state. */
+export function documentState(doc: PixelDocument): DocumentState {
+  return {
+    name: doc.name,
+    width: doc.width,
+    height: doc.height,
+    palette: clonePalette(doc.palette),
+    layers: [...doc.layers],
+    selection: doc.selection,
+  };
+}
+
 /** Replaces the document palette. Palettes are small, so whole snapshots are stored. */
 export interface PaletteEdit {
   kind: 'palette';
@@ -92,6 +126,7 @@ export type Edit =
   | LayerPropsEdit
   | PaletteEdit
   | SelectionEdit
+  | DocumentEdit
   | BatchEdit;
 
 /** Groups edits into one history entry: null if none, the edit itself if one, else a batch. */
@@ -162,6 +197,19 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
     case 'selection':
       doc.selection = direction === 'redo' ? edit.after : edit.before;
       return;
+    case 'document': {
+      const state = direction === 'redo' ? edit.after : edit.before;
+      if (state.layers.some((layer) => layer.pixels.length !== state.width * state.height)) {
+        throw conflict(edit, direction, 'layer size does not match the document');
+      }
+      doc.name = state.name;
+      doc.width = state.width;
+      doc.height = state.height;
+      doc.palette = clonePalette(state.palette);
+      doc.layers = [...state.layers];
+      doc.selection = state.selection;
+      return;
+    }
     case 'batch':
       applyBatch(doc, edit, direction);
       return;

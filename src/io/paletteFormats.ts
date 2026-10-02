@@ -1,4 +1,5 @@
 import { alpha, blue, green, packRgba, parseHex, red, toHex, type Rgba } from '../core/color.ts';
+import { indexImageColors } from '../core/image.ts';
 import { createPalette, MAX_PALETTE_COLORS, type Palette } from '../core/palette.ts';
 
 /*
@@ -100,13 +101,7 @@ export function parseJascPal(text: string, name: string): Palette {
  * transparent pixels. Throws when there are more than `limit`.
  */
 export function uniqueColors(data: Uint8ClampedArray, limit = MAX_PALETTE_COLORS): Rgba[] {
-  const seen = new Set<Rgba>();
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] === 0) continue;
-    seen.add(packRgba(data[i], data[i + 1], data[i + 2], data[i + 3]));
-  }
-  if (seen.size > limit) throw new RangeError(`Image has ${seen.size} colors; a palette holds at most ${limit}`);
-  return [...seen];
+  return indexImageColors(data, limit).colors;
 }
 
 function paletteOf(name: string, colors: Rgba[]): Palette {

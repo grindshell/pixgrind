@@ -15,7 +15,7 @@ import {
   type PaletteLibrary,
   type SavedPalette,
 } from '../io/paletteLibrary.ts';
-import { el, iconButton, setButtonLabel, textButton } from './dom.ts';
+import { el, fieldRow as row, iconButton, option, setButtonLabel, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
 
 export interface OpenedLibrary {
@@ -219,19 +219,6 @@ export function createPaletteLibraryPanel(editor: Editor, { library, persistent 
 
   panel.append(heading, loadRow, mode, saveRow, fileRow, status);
   return panel;
-}
-
-function row(...children: HTMLElement[]): HTMLDivElement {
-  const div = el('div', 'field-row');
-  div.append(...children);
-  return div;
-}
-
-function option(value: string, label: string): HTMLOptionElement {
-  const opt = el('option');
-  opt.value = value;
-  opt.textContent = label;
-  return opt;
 }
 
 function messageOf(error: unknown): string {

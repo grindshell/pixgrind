@@ -2,7 +2,12 @@ import { createLayer, type Layer } from './layer.ts';
 import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
 import type { Rect } from './rect.ts';
 
+/** Largest supported width or height. Bigger documents make every redraw and edit slow. */
+export const MAX_DOCUMENT_SIZE = 1024;
+
 export interface PixelDocument {
+  /** Used for export file names and the window title. */
+  name: string;
   width: number;
   height: number;
   palette: Palette;
@@ -16,11 +21,17 @@ export interface PixelDocument {
   selection: Rect | null;
 }
 
-export function createDocument(width: number, height: number, palette: Palette): PixelDocument {
+export function createDocument(width: number, height: number, palette: Palette, name = 'Untitled'): PixelDocument {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
     throw new RangeError(`Invalid document size ${width}×${height}`);
   }
+  if (width > MAX_DOCUMENT_SIZE || height > MAX_DOCUMENT_SIZE) {
+    throw new RangeError(
+      `${width}×${height} is too large; documents can be at most ${MAX_DOCUMENT_SIZE}×${MAX_DOCUMENT_SIZE}`,
+    );
+  }
   return {
+    name,
     width,
     height,
     palette: clonePalette(palette),

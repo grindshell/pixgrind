@@ -8,6 +8,7 @@ import { CanvasRenderer } from '../render/canvasRenderer.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
 import { el } from './dom.ts';
+import { createFilePanel } from './filePanel.ts';
 import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
 import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
@@ -34,6 +35,8 @@ export class Editor {
   private activeIndexHint = 0;
   private stroke: PixelEditSession | null = null;
   private gestureActive = false;
+  /** Document size the viewport was last fitted to. */
+  private fittedSize: { width: number; height: number };
   private renderQueued = false;
   private readonly listeners = new Set<() => void>();
 
@@ -41,6 +44,7 @@ export class Editor {
     this.doc = doc;
     this.renderer = new CanvasRenderer(canvas);
     this.activeLayerId = doc.layers[0].id;
+    this.fittedSize = { width: doc.width, height: doc.height };
   }
 
   get activeLayer(): Layer {
@@ -191,7 +195,19 @@ export class Editor {
     });
   }
 
+  /** Fits the whole document in view at the largest whole-number zoom. */
+  fitToView(): void {
+    const { width, height } = this.renderer.viewSize;
+    if (width > 0 && height > 0) this.viewport = fitViewport(this.doc.width, this.doc.height, width, height);
+    this.requestRender();
+  }
+
   private documentChanged(): void {
+    // A different size (e.g. an opened image) needs a fresh view.
+    if (this.doc.width !== this.fittedSize.width || this.doc.height !== this.fittedSize.height) {
+      this.fittedSize = { width: this.doc.width, height: this.doc.height };
+      this.fitToView();
+    }
     this.syncActiveLayer();
     // Keep the selected color valid when the palette shrinks.
     this.primaryIndex = Math.min(Math.max(1, this.primaryIndex), Math.max(1, this.doc.palette.colors.length));
@@ -228,6 +244,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   sidebar.append(
     title,
     createHistoryControls(editor),
+    createFilePanel(editor, stage),
     createPalettePanel(editor),
     createPaletteLibraryPanel(editor, openPaletteLibrary()),
     createLayersPanel(editor),
@@ -243,13 +260,19 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   editor.onChange(syncStageLock);
   syncStageLock();
 
+  const syncTitle = () => {
+    document.title = `${doc.name} · Pixgrind`;
+  };
+  editor.onChange(syncTitle);
+  syncTitle();
+
   let stageSize: { width: number; height: number } | null = null;
   const resize = () => {
     const { width, height } = stage.getBoundingClientRect();
     if (width === 0 || height === 0) return;
     editor.renderer.resize(width, height);
     if (!stageSize) {
-      editor.viewport = fitViewport(doc.width, doc.height, width, height);
+      editor.fitToView();
     } else {
       // Keep the same point at the center of the stage as it resizes.
       editor.viewport = {

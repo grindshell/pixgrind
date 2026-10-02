@@ -24,6 +24,20 @@ export function iconButton(name: IconName, label: string, onClick: () => void): 
   return button;
 }
 
+/** A horizontal row of form controls. */
+export function fieldRow(...children: HTMLElement[]): HTMLDivElement {
+  const row = el('div', 'field-row');
+  row.append(...children);
+  return row;
+}
+
+export function option(value: string, label: string): HTMLOptionElement {
+  const opt = el('option');
+  opt.value = value;
+  opt.textContent = label;
+  return opt;
+}
+
 export function setButtonLabel(button: HTMLButtonElement, label: string): void {
   button.title = label;
   button.setAttribute('aria-label', label);

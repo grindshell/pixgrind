@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createPalette, TRANSPARENT } from './palette.ts';
-import { createDocument, getPixel, inBounds, setPixel } from './pixelDocument.ts';
+import { createDocument, getPixel, inBounds, MAX_DOCUMENT_SIZE, setPixel } from './pixelDocument.ts';
 
 const palette = createPalette('test', [0xff0000ff, 0x00ff00ff]);
 
@@ -18,11 +18,18 @@ describe('createDocument', () => {
     expect(palette.colors[0]).toBe(0xff0000ff);
   });
 
+  it('is named "Untitled" unless given a name', () => {
+    expect(createDocument(1, 1, palette).name).toBe('Untitled');
+    expect(createDocument(1, 1, palette, 'Hero').name).toBe('Hero');
+  });
+
   it.each([
     [0, 1],
     [1, 0],
     [-1, 4],
     [1.5, 2],
+    [MAX_DOCUMENT_SIZE + 1, 1],
+    [1, MAX_DOCUMENT_SIZE + 1],
   ])('rejects size %d×%d', (w, h) => {
     expect(() => createDocument(w, h, palette)).toThrow(RangeError);
   });
