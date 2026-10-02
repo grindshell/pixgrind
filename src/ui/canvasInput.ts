@@ -1,5 +1,5 @@
+import type { PixelEditSession } from '../core/edits.ts';
 import { TRANSPARENT } from '../core/palette.ts';
-import { setPixel } from '../core/pixelDocument.ts';
 import { plotLine } from '../core/raster.ts';
 import { screenToPixel, stepZoom, zoomAt } from '../render/viewport.ts';
 import type { Editor } from './editor.ts';
@@ -9,7 +9,7 @@ const BUTTON_MIDDLE = 1;
 const BUTTON_SECONDARY = 2;
 
 type Gesture =
-  | { kind: 'stroke'; pointerId: number; index: number; lastX: number; lastY: number }
+  | { kind: 'stroke'; pointerId: number; session: PixelEditSession; index: number; lastX: number; lastY: number }
   | { kind: 'pan'; pointerId: number; lastClientX: number; lastClientY: number };
 
 /**
@@ -24,11 +24,10 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
-  const paintTo = (x: number, y: number, index: number, fromX = x, fromY = y) => {
-    const { doc, activeLayer } = editor;
+  const paintTo = (session: PixelEditSession, index: number, x: number, y: number, fromX = x, fromY = y) => {
     let changed = false;
     plotLine(fromX, fromY, x, y, (px, py) => {
-      changed = setPixel(doc, activeLayer, px, py, index) || changed;
+      changed = session.setPixel(px, py, index) || changed;
     });
     if (changed) editor.requestRender();
   };
@@ -42,9 +41,11 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
     } else if (e.button === BUTTON_PRIMARY || e.button === BUTTON_SECONDARY) {
       const screen = toScreen(e);
       const { x, y } = screenToPixel(editor.viewport, screen.x, screen.y);
-      const index = e.button === BUTTON_SECONDARY ? TRANSPARENT : editor.primaryIndex;
-      gesture = { kind: 'stroke', pointerId: e.pointerId, index, lastX: x, lastY: y };
-      paintTo(x, y, index);
+      const erase = e.button === BUTTON_SECONDARY;
+      const index = erase ? TRANSPARENT : editor.primaryIndex;
+      const session = editor.beginStroke(erase ? 'Eraser' : 'Pencil');
+      gesture = { kind: 'stroke', pointerId: e.pointerId, session, index, lastX: x, lastY: y };
+      paintTo(session, index, x, y);
     } else {
       return;
     }
@@ -69,16 +70,19 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
     const screen = toScreen(e);
     const { x, y } = screenToPixel(editor.viewport, screen.x, screen.y);
     if (x === gesture.lastX && y === gesture.lastY) return;
-    paintTo(x, y, gesture.index, gesture.lastX, gesture.lastY);
+    paintTo(gesture.session, gesture.index, x, y, gesture.lastX, gesture.lastY);
     gesture.lastX = x;
     gesture.lastY = y;
   });
 
   const endGesture = (e: PointerEvent) => {
-    if (gesture?.pointerId === e.pointerId) gesture = null;
+    if (gesture?.pointerId !== e.pointerId) return;
+    if (gesture.kind === 'stroke') editor.endStroke();
+    gesture = null;
   };
   canvas.addEventListener('pointerup', endGesture);
   canvas.addEventListener('pointercancel', endGesture);
+  canvas.addEventListener('lostpointercapture', endGesture);
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 

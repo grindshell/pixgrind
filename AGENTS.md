@@ -29,10 +29,17 @@ Bootstrapped walking skeleton:
 - Input: left-drag paints the selected color, right-drag erases, middle-drag
   pans, wheel zooms around the cursor.
 - Palette panel showing the default PICO-8 palette; click to select a color.
+- Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
+  Ctrl+Shift+Z and Ctrl+Y.
 
-Not built yet, roughly in priority order: undo/redo, layer panel UI, tool
-selection (line, rect, fill, eyedropper, select/move), palette management and
-swap, image import/export, reference images, project files.
+Not built yet, roughly in priority order: layer panel UI, tool selection
+(line, rect, fill, eyedropper, select/move), palette management and swap,
+image import/export, reference images, project files.
+
+## Git
+
+- The main branch is **`master`**. Branch from it and target it with PRs.
+  (Claude Code's auto-detected "main branch" may say `main`; ignore that.)
 
 ## Environment
 
@@ -83,10 +90,12 @@ src/
   main.ts        entry point; mounts the editor
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
-                 composite, raster
+                 composite, raster, edits (undoable changes), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
-  io/            (empty) import/export: images, palette files, project files
-  ui/            Editor state + mounting, canvas input, palette panel
+  io/            (not created yet) import/export: images, palette files,
+                 project files
+  ui/            Editor state + mounting, canvas input, keyboard shortcuts,
+                 history controls, palette panel
 public/          static assets served as-is (favicon.svg)
 ```
 
@@ -172,11 +181,25 @@ storage without updating this section and the palette-swap design.
 - Planned tools: pencil, eraser (writes index 0), line, rectangle, fill
   (iterative flood fill, not recursive), eyedropper, select/move.
 
-### Undo/redo (planned)
+### Undo/redo
 
-- Every pixel-changing action must be undoable. One stroke = one history entry.
-- Store diffs (changed indices + before/after values) or per-layer snapshots
-  for large ops; don't snapshot the whole document per pointer move.
+- Every document-changing action must be undoable. One stroke = one history
+  entry.
+- `core/edits.ts` defines `Edit`, a discriminated union of plain-data changes
+  (currently only `PixelEdit`), and `applyEdit(doc, edit, 'undo' | 'redo')`.
+  New kinds of change (add/delete/reorder layer, palette edits, resize) become
+  new union members with a case in `applyEdit`, not callbacks or closures.
+- `PixelEdit` is a diff: changed offsets plus before/after palette indices.
+  It targets its layer by **id**, not position, so it survives reordering.
+- `core/history.ts` `History` holds the undo/redo stacks (default limit 256).
+  `push` takes an edit that is already applied and clears redo. If
+  `applyEdit` throws, the stacks are left unchanged.
+- In the UI, pixel writes go through `editor.beginStroke(label)`, which
+  returns a `PixelEditSession`, then `editor.endStroke()`, which commits it.
+  Never call `setPixel` on document layers directly from UI code: the change
+  would skip history.
+- Strokes that change nothing (or end up back at the original values) don't
+  create entries. Undo/redo are ignored while a stroke is in progress.
 
 ### Import/export (planned)
 
@@ -212,5 +235,6 @@ storage without updating this section and the palette-swap design.
 - Keep `core/` functions pure where practical (input → output, no hidden state)
   so they are easy to test.
 - Unit-test core logic: palette parsing/serialization, palette swap, flood fill,
-  line rasterization, layer compositing, history, project file round-trips.
+  line rasterization, layer compositing, edits and history (undo + redo for
+  every new `Edit` kind), project file round-trips.
 - Don't commit build output (`dist/`) or `node_modules/`.

@@ -1,18 +1,24 @@
+import { beginPixelEdit, type PixelEditSession } from '../core/edits.ts';
+import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
 import { CanvasRenderer } from '../render/canvasRenderer.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
+import { createHistoryControls } from './historyControls.ts';
 import { createPalettePanel } from './palettePanel.ts';
+import { attachShortcuts } from './shortcuts.ts';
 
 /** Editor session state: the document plus everything about how it is being edited. */
 export class Editor {
   readonly doc: PixelDocument;
   readonly renderer: CanvasRenderer;
+  readonly history = new History();
   viewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
   activeLayerIndex = 0;
   /** Palette index the primary (left) button paints with. */
   primaryIndex = 1;
+  private stroke: PixelEditSession | null = null;
   private renderQueued = false;
   private readonly listeners = new Set<() => void>();
 
@@ -27,6 +33,40 @@ export class Editor {
 
   setPrimaryIndex(index: number): void {
     this.primaryIndex = index;
+    this.notify();
+  }
+
+  /**
+   * Starts recording pixel writes to the active layer as one undoable edit.
+   * All UI pixel writes must go through a stroke so they land in history.
+   */
+  beginStroke(label: string): PixelEditSession {
+    this.endStroke();
+    this.stroke = beginPixelEdit(this.doc, this.activeLayer, label);
+    return this.stroke;
+  }
+
+  /** Commits the current stroke, if any, to history. */
+  endStroke(): void {
+    if (!this.stroke) return;
+    const edit = this.stroke.finish();
+    this.stroke = null;
+    if (edit) {
+      this.history.push(edit);
+      this.notify();
+    }
+  }
+
+  undo(): void {
+    // Undoing underneath an in-progress stroke would interleave the two edits.
+    if (this.stroke || !this.history.undo(this.doc)) return;
+    this.requestRender();
+    this.notify();
+  }
+
+  redo(): void {
+    if (this.stroke || !this.history.redo(this.doc)) return;
+    this.requestRender();
     this.notify();
   }
 
@@ -65,8 +105,9 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   root.append(layout);
 
   const editor = new Editor(doc, canvas);
-  sidebar.append(title, createPalettePanel(editor));
+  sidebar.append(title, createHistoryControls(editor), createPalettePanel(editor));
   attachCanvasInput(canvas, editor);
+  attachShortcuts(window, editor);
 
   let stageSize: { width: number; height: number } | null = null;
   const resize = () => {
