@@ -1,23 +1,31 @@
-import { beginPixelEdit, type PixelEditSession } from '../core/edits.ts';
+import { applyEdit, beginPixelEdit, type Edit, type PixelEditSession } from '../core/edits.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
-import type { PixelDocument } from '../core/pixelDocument.ts';
+import { findLayer, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
 import { CanvasRenderer } from '../render/canvasRenderer.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
+import { el } from './dom.ts';
 import { createHistoryControls } from './historyControls.ts';
+import { createLayersPanel } from './layersPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
 
-/** Editor session state: the document plus everything about how it is being edited. */
+/**
+ * Editor session state: the document plus everything about how it is being
+ * edited. All document changes from the UI go through this class so they
+ * reach history, trigger a redraw, and notify listeners.
+ */
 export class Editor {
   readonly doc: PixelDocument;
   readonly renderer: CanvasRenderer;
   readonly history = new History();
   viewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
-  activeLayerIndex = 0;
   /** Palette index the primary (left) button paints with. */
   primaryIndex = 1;
+  private activeLayerId: string;
+  /** Last known position of the active layer; used to pick a neighbor if it disappears. */
+  private activeIndexHint = 0;
   private stroke: PixelEditSession | null = null;
   private renderQueued = false;
   private readonly listeners = new Set<() => void>();
@@ -25,15 +33,60 @@ export class Editor {
   constructor(doc: PixelDocument, canvas: HTMLCanvasElement) {
     this.doc = doc;
     this.renderer = new CanvasRenderer(canvas);
+    this.activeLayerId = doc.layers[0].id;
   }
 
   get activeLayer(): Layer {
-    return this.doc.layers[this.activeLayerIndex];
+    return findLayer(this.doc, this.activeLayerId) ?? this.doc.layers[0];
+  }
+
+  get activeLayerIndex(): number {
+    return Math.max(0, layerIndex(this.doc, this.activeLayerId));
+  }
+
+  selectLayer(layerId: string): void {
+    const index = layerIndex(this.doc, layerId);
+    if (index < 0) throw new Error(`Layer ${layerId} not found`);
+    this.activeLayerId = layerId;
+    this.activeIndexHint = index;
+    this.notify();
   }
 
   setPrimaryIndex(index: number): void {
     this.primaryIndex = index;
     this.notify();
+  }
+
+  /** Applies an edit and records it in history. No-op for null (constructors return null for "no change"). */
+  perform(edit: Edit | null): void {
+    if (!edit) return;
+    this.endStroke();
+    applyEdit(this.doc, edit, 'redo');
+    this.history.push(edit);
+    this.documentChanged();
+  }
+
+  /**
+   * Shows or hides a layer. Intentionally not undoable (as in most pixel art
+   * editors): toggling visibility to compare shouldn't consume undo steps.
+   */
+  setLayerVisible(layerId: string, visible: boolean): void {
+    const layer = findLayer(this.doc, layerId);
+    if (!layer || layer.visible === visible) return;
+    layer.visible = visible;
+    this.requestRender();
+    this.notify();
+  }
+
+  /**
+   * Live opacity preview (e.g. while a slider is dragged). Not recorded:
+   * follow up with `perform(layerPropsEdit(..., { opacity }, { opacity: start }))`.
+   */
+  previewLayerOpacity(layerId: string, opacity: number): void {
+    const layer = findLayer(this.doc, layerId);
+    if (!layer) return;
+    layer.opacity = opacity;
+    this.requestRender();
   }
 
   /**
@@ -60,14 +113,12 @@ export class Editor {
   undo(): void {
     // Undoing underneath an in-progress stroke would interleave the two edits.
     if (this.stroke || !this.history.undo(this.doc)) return;
-    this.requestRender();
-    this.notify();
+    this.documentChanged();
   }
 
   redo(): void {
     if (this.stroke || !this.history.redo(this.doc)) return;
-    this.requestRender();
-    this.notify();
+    this.documentChanged();
   }
 
   /** Subscribes to editor state changes (not per-pixel edits). Returns an unsubscribe function. */
@@ -84,6 +135,22 @@ export class Editor {
       this.renderQueued = false;
       this.renderer.render(this.doc, this.viewport);
     });
+  }
+
+  private documentChanged(): void {
+    this.syncActiveLayer();
+    this.requestRender();
+    this.notify();
+  }
+
+  /** Keeps the active layer valid after layers are added, removed, or moved. */
+  private syncActiveLayer(): void {
+    let index = layerIndex(this.doc, this.activeLayerId);
+    if (index < 0) {
+      index = Math.min(this.activeIndexHint, this.doc.layers.length - 1);
+      this.activeLayerId = this.doc.layers[index].id;
+    }
+    this.activeIndexHint = index;
   }
 
   private notify(): void {
@@ -105,9 +172,14 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   root.append(layout);
 
   const editor = new Editor(doc, canvas);
-  sidebar.append(title, createHistoryControls(editor), createPalettePanel(editor));
+  sidebar.append(title, createHistoryControls(editor), createPalettePanel(editor), createLayersPanel(editor));
   attachCanvasInput(canvas, editor);
   attachShortcuts(window, editor);
+
+  // Hidden layers can't be drawn on; show that with the cursor.
+  const syncStageLock = () => stage.classList.toggle('is-locked', !editor.activeLayer.visible);
+  editor.onChange(syncStageLock);
+  syncStageLock();
 
   let stageSize: { width: number; height: number } | null = null;
   const resize = () => {
@@ -147,10 +219,4 @@ function watchDevicePixelRatio(onChange: () => void): void {
     },
     { once: true },
   );
-}
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  element.className = className;
-  return element;
 }

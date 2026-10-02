@@ -1,5 +1,5 @@
 import type { Layer } from './layer.ts';
-import { inBounds, setPixel, type PixelDocument } from './pixelDocument.ts';
+import { findLayer, inBounds, layerIndex, setPixel, type PixelDocument } from './pixelDocument.ts';
 
 /** A pixel-level change to one layer, stored as a diff. */
 export interface PixelEdit {
@@ -14,27 +14,147 @@ export interface PixelEdit {
   after: Uint8Array;
 }
 
-/**
- * A reversible change to a document. New kinds of change (layer add/remove,
- * reorder, palette edits, …) join this union and get a case in `applyEdit`.
+/*
+ * Layer add/remove edits hold the layer object itself rather than a copy.
+ * History is linear, so whenever one of these is undone or redone, every later
+ * edit has already been undone and the layer is back in the state it had when
+ * the edit was made.
  */
-export type Edit = PixelEdit;
+
+export interface LayerAddEdit {
+  kind: 'layer-add';
+  label: string;
+  layer: Layer;
+  /** Position the layer is inserted at (0 = bottom). */
+  index: number;
+}
+
+export interface LayerRemoveEdit {
+  kind: 'layer-remove';
+  label: string;
+  layer: Layer;
+  /** Position the layer was removed from, and is restored to on undo. */
+  index: number;
+}
+
+export interface LayerMoveEdit {
+  kind: 'layer-move';
+  label: string;
+  layerId: string;
+  from: number;
+  to: number;
+}
+
+/** Undoable layer properties. Visibility is deliberately not undoable. */
+export type LayerProps = Partial<Pick<Layer, 'name' | 'opacity'>>;
+
+export interface LayerPropsEdit {
+  kind: 'layer-props';
+  label: string;
+  layerId: string;
+  before: LayerProps;
+  after: LayerProps;
+}
+
+/** Several edits applied as one history entry, in order on redo and in reverse on undo. */
+export interface BatchEdit {
+  kind: 'batch';
+  label: string;
+  edits: Edit[];
+}
+
+/**
+ * A reversible change to a document. Each kind is plain data with a case in
+ * `applyEdit`; add new kinds of change here rather than as callbacks.
+ */
+export type Edit = PixelEdit | LayerAddEdit | LayerRemoveEdit | LayerMoveEdit | LayerPropsEdit | BatchEdit;
 
 export type EditDirection = 'undo' | 'redo';
 
-/** Reverts (`undo`) or reapplies (`redo`) an edit. Throws without changing anything if the edit no longer fits the document. */
+/**
+ * Reverts (`undo`) or applies (`redo`) an edit. Edits are built unapplied, so
+ * performing one for the first time is a `redo`. Throws without changing the
+ * document if the edit no longer fits it.
+ */
 export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirection): void {
   switch (edit.kind) {
     case 'pixels': {
-      const layer = doc.layers.find((l) => l.id === edit.layerId);
-      if (!layer) throw new Error(`Cannot ${direction} "${edit.label}": layer ${edit.layerId} not found`);
+      const layer = requireLayer(doc, edit.layerId, edit, direction);
       const values = direction === 'undo' ? edit.before : edit.after;
       edit.offsets.forEach((offset, i) => {
         layer.pixels[offset] = values[i];
       });
       return;
     }
+    case 'layer-add':
+      if (direction === 'redo') insertLayer(doc, edit.layer, edit.index, edit, direction);
+      else removeLayer(doc, edit.layer.id, edit, direction);
+      return;
+    case 'layer-remove':
+      if (direction === 'redo') removeLayer(doc, edit.layer.id, edit, direction);
+      else insertLayer(doc, edit.layer, edit.index, edit, direction);
+      return;
+    case 'layer-move': {
+      const [from, to] = direction === 'redo' ? [edit.from, edit.to] : [edit.to, edit.from];
+      if (layerIndex(doc, edit.layerId) !== from || to >= doc.layers.length) {
+        throw conflict(edit, direction, `layer ${edit.layerId} is not at position ${from}`);
+      }
+      const [layer] = doc.layers.splice(from, 1);
+      doc.layers.splice(to, 0, layer);
+      return;
+    }
+    case 'layer-props':
+      Object.assign(requireLayer(doc, edit.layerId, edit, direction), direction === 'redo' ? edit.after : edit.before);
+      return;
+    case 'batch':
+      applyBatch(doc, edit, direction);
+      return;
+    default:
+      return assertNever(edit);
   }
+}
+
+function applyBatch(doc: PixelDocument, batch: BatchEdit, direction: EditDirection): void {
+  const ordered = direction === 'redo' ? batch.edits : [...batch.edits].reverse();
+  const applied: Edit[] = [];
+  try {
+    for (const edit of ordered) {
+      applyEdit(doc, edit, direction);
+      applied.push(edit);
+    }
+  } catch (error) {
+    // Roll back what was applied so the batch is all-or-nothing.
+    const opposite: EditDirection = direction === 'redo' ? 'undo' : 'redo';
+    for (const edit of applied.reverse()) applyEdit(doc, edit, opposite);
+    throw error;
+  }
+}
+
+function insertLayer(doc: PixelDocument, layer: Layer, index: number, edit: Edit, direction: EditDirection): void {
+  if (index < 0 || index > doc.layers.length) throw conflict(edit, direction, `position ${index} is out of range`);
+  if (findLayer(doc, layer.id)) throw conflict(edit, direction, `layer ${layer.id} already exists`);
+  if (layer.pixels.length !== doc.width * doc.height) throw conflict(edit, direction, 'layer size does not match');
+  doc.layers.splice(index, 0, layer);
+}
+
+function removeLayer(doc: PixelDocument, layerId: string, edit: Edit, direction: EditDirection): void {
+  const index = layerIndex(doc, layerId);
+  if (index < 0) throw conflict(edit, direction, `layer ${layerId} not found`);
+  doc.layers.splice(index, 1);
+}
+
+function requireLayer(doc: PixelDocument, layerId: string, edit: Edit, direction: EditDirection): Layer {
+  const layer = findLayer(doc, layerId);
+  if (!layer) throw conflict(edit, direction, `layer ${layerId} not found`);
+  return layer;
+}
+
+function conflict(edit: Edit, direction: EditDirection, reason: string): Error {
+  return new Error(`Cannot ${direction} "${edit.label}": ${reason}`);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled edit: ${JSON.stringify(value)}`);
 }
 
 /** Records pixel writes to one layer so they can be committed as a single {@link PixelEdit}. */

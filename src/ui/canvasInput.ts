@@ -39,6 +39,8 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       e.preventDefault();
       gesture = { kind: 'pan', pointerId: e.pointerId, lastClientX: e.clientX, lastClientY: e.clientY };
     } else if (e.button === BUTTON_PRIMARY || e.button === BUTTON_SECONDARY) {
+      // Painting on a hidden layer would change pixels the user can't see.
+      if (!editor.activeLayer.visible) return;
       const screen = toScreen(e);
       const { x, y } = screenToPixel(editor.viewport, screen.x, screen.y);
       const erase = e.button === BUTTON_SECONDARY;

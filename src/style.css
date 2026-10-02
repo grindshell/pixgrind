@@ -123,3 +123,158 @@ body,
   touch-action: none;
   cursor: crosshair;
 }
+
+.stage.is-locked .stage-canvas {
+  cursor: not-allowed;
+}
+
+/* Layers panel */
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.panel-header .panel-title {
+  margin: 0;
+}
+
+.icon-group {
+  display: flex;
+  gap: 2px;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.layer-row.is-active {
+  background: var(--bg);
+  border-color: var(--accent);
+}
+
+.layer-row.is-hidden .layer-thumb,
+.layer-row.is-hidden .layer-name {
+  opacity: 0.45;
+}
+
+.layer-thumb {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: repeating-conic-gradient(#3a3a44 0 25%, #2e2e37 0 50%) 0 0 / 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.layer-name {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 4px;
+  overflow: hidden;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.layer-name:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.layer-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+}
+
+.layer-opacity {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.layer-footer {
+  margin-top: 6px;
+}
+
+.opacity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.opacity-row input {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.opacity-value {
+  width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

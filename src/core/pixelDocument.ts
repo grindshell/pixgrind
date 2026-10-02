@@ -21,6 +21,15 @@ export function createDocument(width: number, height: number, palette: Palette):
   };
 }
 
+/** Position of a layer in `doc.layers` (0 = bottom), or -1 if it isn't there. */
+export function layerIndex(doc: PixelDocument, layerId: string): number {
+  return doc.layers.findIndex((layer) => layer.id === layerId);
+}
+
+export function findLayer(doc: PixelDocument, layerId: string): Layer | undefined {
+  return doc.layers.find((layer) => layer.id === layerId);
+}
+
 export function inBounds(doc: PixelDocument, x: number, y: number): boolean {
   return x >= 0 && y >= 0 && x < doc.width && y < doc.height;
 }

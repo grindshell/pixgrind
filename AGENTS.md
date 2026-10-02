@@ -31,10 +31,14 @@ Bootstrapped walking skeleton:
 - Palette panel showing the default PICO-8 palette; click to select a color.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y.
+- Layers panel: thumbnails, select, show/hide, rename (double-click), add,
+  duplicate, delete, move up/down, merge down, opacity slider. All undoable
+  except show/hide.
 
-Not built yet, roughly in priority order: layer panel UI, tool selection
-(line, rect, fill, eyedropper, select/move), palette management and swap,
-image import/export, reference images, project files.
+Not built yet, roughly in priority order: tool selection (line, rect, fill,
+eyedropper, select/move), palette management and swap, image import/export,
+reference images, project files. Layers panel follow-ups: drag-and-drop
+reordering, keyboard shortcuts for layer actions.
 
 ## Git
 
@@ -90,12 +94,14 @@ src/
   main.ts        entry point; mounts the editor
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
-                 composite, raster, edits (undoable changes), history
+                 composite, raster, edits (undoable changes), layerEdits
+                 (edit constructors for layer operations), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
   io/            (not created yet) import/export: images, palette files,
                  project files
   ui/            Editor state + mounting, canvas input, keyboard shortcuts,
-                 history controls, palette panel
+                 history controls, palette panel, layers panel, DOM helpers
+                 (dom.ts) and inline SVG icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
 ```
 
@@ -147,9 +153,19 @@ storage without updating this section and the palette-swap design.
 
 ### Layers
 
-- `doc.layers` is ordered bottom to top. Composite with per-layer visibility
-  and opacity (`compositeRgba`, straight-alpha "source over").
-- Draw operations target the editor's active layer only.
+- `doc.layers` is ordered bottom to top (the panel shows it reversed).
+  Composite with per-layer visibility and opacity (`compositeRgba`,
+  straight-alpha "source over"). A document always has at least one layer.
+- Refer to layers by **id**, not array position, anywhere the reference
+  outlives the current call (edits, editor state, UI callbacks).
+- The editor tracks the active layer by id (`Editor.selectLayer`). If an edit
+  or undo removes it, the editor falls back to the layer at its old position.
+- Draw operations target the editor's active layer only, and are blocked
+  while that layer is hidden (the stage shows a not-allowed cursor).
+- Merge down (`mergeDownEdit`) requires both layers visible and at 100%
+  opacity, because palette indices can't blend. The upper layer's
+  non-transparent pixels replace the lower layer's. A translucent palette
+  color therefore replaces what was under it instead of blending with it.
 - The reference image is **not** a layer: it is drawn under (or optionally
   over) the composite, has its own opacity/position/scale, and is excluded from
   export and from pixel data.
@@ -184,13 +200,27 @@ storage without updating this section and the palette-swap design.
 ### Undo/redo
 
 - Every document-changing action must be undoable. One stroke = one history
-  entry.
-- `core/edits.ts` defines `Edit`, a discriminated union of plain-data changes
-  (currently only `PixelEdit`), and `applyEdit(doc, edit, 'undo' | 'redo')`.
-  New kinds of change (add/delete/reorder layer, palette edits, resize) become
-  new union members with a case in `applyEdit`, not callbacks or closures.
+  entry. **Exception:** layer visibility is not undoable, as in most pixel
+  art editors: toggling it to compare shouldn't consume undo steps. It goes
+  through `Editor.setLayerVisible`.
+- `core/edits.ts` defines `Edit`, a discriminated union of plain-data
+  changes, and `applyEdit(doc, edit, 'undo' | 'redo')`. Current kinds:
+  - `pixels`
+  - `layer-add`, `layer-remove`, `layer-move`, `layer-props` (name, opacity)
+  - `batch`, which is all-or-nothing: it rolls back if any part fails.
+
+  New kinds of change (palette edits, resize, …) become new union members
+  with a case in `applyEdit`. The `assertNever` default makes a missed case a
+  type error. Don't use callbacks or closures for edits.
+- Edits are constructed **unapplied**. Performing one for the first time is
+  `applyEdit(doc, edit, 'redo')`, which is what `Editor.perform(edit)` does
+  before pushing it to history. Constructors in `core/layerEdits.ts` validate
+  and return `null` for no-op changes. `perform(null)` is a no-op.
 - `PixelEdit` is a diff: changed offsets plus before/after palette indices.
-  It targets its layer by **id**, not position, so it survives reordering.
+  It targets its layer by id, so it survives reordering and delete/restore.
+- Live previews (e.g. dragging the opacity slider) mutate through
+  `Editor.previewLayerOpacity`, then commit one edit on release with an
+  explicit `before` value (`layerPropsEdit(doc, id, after, before)`).
 - `core/history.ts` `History` holds the undo/redo stacks (default limit 256).
   `push` takes an edit that is already applied and clears redo. If
   `applyEdit` throws, the stacks are left unchanged.
@@ -224,8 +254,13 @@ storage without updating this section and the palette-swap design.
 - In dev builds the editor is exposed as `window.pixgrind` (see `main.ts`), so
   automation can read `pixgrind.viewport`, `pixgrind.doc`, and
   `pixgrind.activeLayer.pixels` instead of guessing coordinates.
-- Synthetic `PointerEvent`/`WheelEvent`s dispatched on the canvas exercise the
-  real input path. Compute client coordinates from `pixgrind.viewport`.
+- Synthetic `PointerEvent`/`WheelEvent`s dispatched on the stage canvas
+  exercise the real input path. Compute client coordinates from
+  `pixgrind.viewport`. Select it with `.stage-canvas`: plain `canvas` matches
+  a layer thumbnail in the sidebar first.
+- Screenshots of the Browser pane can time out when the app window is
+  occluded. Reading state and canvas pixels (`getImageData`) through
+  JavaScript works regardless.
 
 ## Conventions
 
