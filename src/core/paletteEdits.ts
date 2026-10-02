@@ -14,8 +14,9 @@ export type PaletteCheck = { ok: true } | { ok: false; reason: string };
 /** How many pixels, across all layers, use each palette index (0–255). */
 export function colorUsage(doc: PixelDocument): Uint32Array {
   const counts = new Uint32Array(256);
-  for (const layer of doc.layers) {
-    for (const index of layer.pixels) counts[index]++;
+  for (const { pixels } of doc.layers) {
+    // An indexed loop: iterating a typed array with for…of is several times slower.
+    for (let i = 0; i < pixels.length; i++) counts[pixels[i]]++;
   }
   return counts;
 }
@@ -71,14 +72,15 @@ export function addColorEdit(doc: PixelDocument, color: Rgba): PaletteEdit | nul
 
 /**
  * Whether a color can be deleted. Only unused colors can: deleting a used one
- * would have to recolor pixels behind the user's back.
+ * would have to recolor pixels behind the user's back. Pass `usage` (from
+ * `colorUsage`) to reuse a count instead of scanning every pixel again.
  */
-export function canRemoveColor(doc: PixelDocument, index: number): PaletteCheck {
+export function canRemoveColor(doc: PixelDocument, index: number, usage = colorUsage(doc)): PaletteCheck {
   if (!Number.isInteger(index) || index < 1 || index > doc.palette.colors.length) {
     return { ok: false, reason: 'No such color' };
   }
   if (doc.palette.colors.length <= 1) return { ok: false, reason: 'A palette needs at least one color' };
-  const uses = colorUsage(doc)[index];
+  const uses = usage[index];
   if (uses > 0) return { ok: false, reason: `Used by ${uses} pixel${uses === 1 ? '' : 's'}` };
   return { ok: true };
 }

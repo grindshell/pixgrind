@@ -31,6 +31,15 @@ export interface RenderOverlays {
   lasso?: readonly Point[] | null;
 }
 
+export interface RenderOptions {
+  /**
+   * The document's pixels, palette and layers haven't changed since the last
+   * render (only the view or overlays have), so the layer composite can be
+   * reused instead of recomputed.
+   */
+  reuseComposite?: boolean;
+}
+
 /** Draws a document onto a screen canvas: checkerboard backdrop, reference image, layer composite, selection. */
 export class CanvasRenderer {
   private readonly canvas: HTMLCanvasElement;
@@ -79,6 +88,7 @@ export class CanvasRenderer {
     doc: PixelDocument,
     viewport: Viewport,
     { reference = null, brush = null, lasso = null }: RenderOverlays = {},
+    { reuseComposite = false }: RenderOptions = {},
   ): void {
     const { ctx } = this;
     const dpr = this.canvas.width / Math.max(1, this.cssWidth);
@@ -101,7 +111,7 @@ export class CanvasRenderer {
     if (shownReference && !shownReference.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
 
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(this.compositeCanvas(doc), offsetX, offsetY, width, height);
+    ctx.drawImage(this.compositeCanvas(doc, reuseComposite), offsetX, offsetY, width, height);
 
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
     if (doc.floating) this.drawFloatingOverhang(doc, doc.floating, offsetX, offsetY, width, height, zoom);
@@ -259,11 +269,14 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  private compositeCanvas(doc: PixelDocument): HTMLCanvasElement {
+  /** The visible layers flattened at native size. Recomposited unless `reuse` and the size is unchanged. */
+  private compositeCanvas(doc: PixelDocument, reuse: boolean): HTMLCanvasElement {
     if (this.imageData?.width !== doc.width || this.imageData.height !== doc.height) {
       this.docCanvas.width = doc.width;
       this.docCanvas.height = doc.height;
       this.imageData = this.docCtx.createImageData(doc.width, doc.height);
+    } else if (reuse) {
+      return this.docCanvas;
     }
     compositeRgba(doc, this.imageData.data);
     this.docCtx.putImageData(this.imageData, 0, 0);

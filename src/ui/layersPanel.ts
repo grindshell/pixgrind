@@ -1,4 +1,4 @@
-import { compositeRgba } from '../core/composite.ts';
+import { layerThumbnailRgba } from '../core/composite.ts';
 import type { Layer } from '../core/layer.ts';
 import {
   addLayerEdit,
@@ -13,6 +13,13 @@ import type { PixelDocument } from '../core/pixelDocument.ts';
 import { el, iconButton, setButtonLabel } from './dom.ts';
 import type { Editor } from './editor.ts';
 import { icon } from './icons.ts';
+
+/**
+ * Thumbnails are drawn at most this many pixels across, enough for their CSS
+ * size on high-DPI screens. They're redrawn on every change, so large
+ * documents mustn't draw them at full size.
+ */
+const THUMBNAIL_SIZE = 64;
 
 /**
  * Layer list (top layer first) with add/duplicate/delete, reorder, merge down,
@@ -125,8 +132,9 @@ function createLayerRow(editor: Editor, layer: Layer, rerender: () => void): Lay
   visibility.addEventListener('click', () => editor.setLayerVisible(layer.id, !layer.visible));
 
   const thumbnail = el('canvas', 'layer-thumb');
-  thumbnail.width = editor.doc.width;
-  thumbnail.height = editor.doc.height;
+  const scale = Math.min(1, THUMBNAIL_SIZE / Math.max(editor.doc.width, editor.doc.height));
+  thumbnail.width = Math.max(1, Math.round(editor.doc.width * scale));
+  thumbnail.height = Math.max(1, Math.round(editor.doc.height * scale));
 
   const name = el('button', 'layer-name');
   name.type = 'button';
@@ -177,13 +185,12 @@ function startRename(editor: Editor, layer: Layer, nameButton: HTMLButtonElement
   input.addEventListener('blur', () => finish(true));
 }
 
-/** Draws the layer alone, at full opacity, at native size (CSS scales it down). */
+/** Draws the layer alone, at full opacity, at the canvas's size (CSS scales it to fit). */
 function drawThumbnail(canvas: HTMLCanvasElement, doc: PixelDocument, layer: Layer): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const image = ctx.createImageData(doc.width, doc.height);
-  compositeRgba({ ...doc, layers: [{ ...layer, visible: true, opacity: 1 }] }, image.data);
-  ctx.putImageData(image, 0, 0);
+  const { width, height } = canvas;
+  ctx.putImageData(new ImageData(layerThumbnailRgba(doc, layer, width, height), width, height), 0, 0);
 }
 
 /** Opacity slider for the active layer: previews live while dragging, records one edit on release. */

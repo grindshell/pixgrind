@@ -78,6 +78,9 @@ export class Editor {
   /** Layer visibility is saved in projects but changes outside history, so it's tracked separately. */
   private visibilityChanged = false;
   private renderQueued = false;
+  /** Whether document content may have changed since the last render, so the layer composite must be redone. */
+  private compositeStale = true;
+  private documentRevision = 0;
   private readonly listeners = new Set<() => void>();
 
   constructor(doc: PixelDocument, canvas: HTMLCanvasElement) {
@@ -104,6 +107,14 @@ export class Editor {
     this.notify();
   }
 
+  /**
+   * Goes up with every recorded edit, undo and redo, so panels can cache
+   * what they derive from the document (e.g. color usage) between changes.
+   */
+  get revision(): number {
+    return this.documentRevision;
+  }
+
   get activeLayer(): Layer {
     return findLayer(this.doc, this.activeLayerId) ?? this.doc.layers[0];
   }
@@ -118,7 +129,7 @@ export class Editor {
     this.activeLayerId = layerId;
     this.activeIndexHint = index;
     // The brush outline hides over hidden layers.
-    this.requestRender();
+    this.requestRender('view');
     this.notify();
   }
 
@@ -146,7 +157,7 @@ export class Editor {
     if (this.tool === tool) return;
     getTool(this.tool).deactivate?.(this);
     this.tool = tool;
-    this.requestRender();
+    this.requestRender('view');
     this.notify();
   }
 
@@ -155,7 +166,7 @@ export class Editor {
     brush.size = clampBrushSize(brush.size);
     if (brush.size === this.brush.size && brush.shape === this.brush.shape) return;
     this.brush = brush;
-    this.requestRender();
+    this.requestRender('view');
     this.notify();
   }
 
@@ -181,7 +192,7 @@ export class Editor {
   setPointer(pointer: Point | null): void {
     if (pointer?.x === this.pointer?.x && pointer?.y === this.pointer?.y) return;
     this.pointer = pointer;
-    if (getTool(this.tool).brush) this.requestRender();
+    if (getTool(this.tool).brush) this.requestRender('view');
   }
 
   /**
@@ -193,7 +204,7 @@ export class Editor {
     if (this.reference && this.reference !== reference) this.reference.bitmap.close();
     this.reference = reference;
     if (!reference && this.tool === 'reference') this.tool = 'pencil';
-    this.requestRender();
+    this.requestRender('view');
     this.notify();
   }
 
@@ -201,7 +212,7 @@ export class Editor {
   updateReference(settings: Partial<ReferenceSettings>, { silent = false } = {}): void {
     if (!this.reference) return;
     Object.assign(this.reference, settings);
-    this.requestRender();
+    this.requestRender('view');
     if (!silent) this.notify();
   }
 
@@ -271,13 +282,13 @@ export class Editor {
    */
   previewSelection(selection: Mask | null): void {
     this.doc.selection = selection;
-    this.requestRender();
+    this.requestRender('view');
   }
 
   /** Shows the path of a lasso being drawn (null to hide it). Not document state. */
   previewLasso(points: readonly Point[] | null): void {
     this.lasso = points;
-    this.requestRender();
+    this.requestRender('view');
   }
 
   /**
@@ -286,7 +297,8 @@ export class Editor {
    */
   previewFloating(floating: FloatingPixels | null): void {
     this.doc.floating = floating;
-    this.requestRender();
+    // Its pixels are in the layer, written (and rendered) separately.
+    this.requestRender('view');
   }
 
   /**
@@ -352,17 +364,26 @@ export class Editor {
     return () => this.listeners.delete(listener);
   }
 
-  /** Schedules a redraw on the next animation frame. Safe to call repeatedly. */
-  requestRender(): void {
+  /**
+   * Schedules a redraw on the next animation frame. Safe to call repeatedly.
+   * `view` says only the view or overlays changed (zoom, pan, brush outline,
+   * selection, lasso, reference), not pixels, palette or layers, so the layer
+   * composite is reused. When in doubt, leave the default.
+   */
+  requestRender(change: 'content' | 'view' = 'content'): void {
+    if (change === 'content') this.compositeStale = true;
     if (this.renderQueued) return;
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
-      this.renderer.render(this.doc, this.viewport, {
-        reference: this.reference,
-        brush: this.brushCursor(),
-        lasso: this.lasso,
-      });
+      const reuseComposite = !this.compositeStale;
+      this.compositeStale = false;
+      this.renderer.render(
+        this.doc,
+        this.viewport,
+        { reference: this.reference, brush: this.brushCursor(), lasso: this.lasso },
+        { reuseComposite },
+      );
     });
   }
 
@@ -377,10 +398,11 @@ export class Editor {
   fitToView(): void {
     const { width, height } = this.renderer.viewSize;
     if (width > 0 && height > 0) this.viewport = fitViewport(this.doc.width, this.doc.height, width, height);
-    this.requestRender();
+    this.requestRender('view');
   }
 
   private documentChanged(edit: Edit, direction: EditDirection): void {
+    this.documentRevision++;
     // A different size (e.g. an opened image) needs a fresh view.
     if (this.doc.width !== this.fittedSize.width || this.doc.height !== this.fittedSize.height) {
       this.fittedSize = { width: this.doc.width, height: this.doc.height };
@@ -471,7 +493,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
       };
     }
     stageSize = { width, height };
-    editor.requestRender();
+    editor.requestRender('view');
   };
   new ResizeObserver(resize).observe(stage);
   watchDevicePixelRatio(resize);

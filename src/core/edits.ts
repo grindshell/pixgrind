@@ -217,6 +217,46 @@ export function pixelEditFromValues(layer: Layer, label: string, values: Readonl
   };
 }
 
+/**
+ * A pixel edit that changes `layer` to `after` (laid out like its pixels),
+ * keeping only the pixels that differ. Built unapplied. Null when nothing
+ * changes. For whole-layer changes, where a map of values would be slow.
+ */
+export function pixelEditFromArray(layer: Layer, label: string, after: Uint8Array): PixelEdit | null {
+  if (after.length !== layer.pixels.length) throw new RangeError('Pixel array does not match the layer');
+  return diffPixels(layer.id, label, layer.pixels, after, 0, after.length);
+}
+
+/** An edit from `before` to `after` (both layer-sized) for the offsets in [start, end) where they differ. */
+function diffPixels(
+  layerId: string,
+  label: string,
+  before: Uint8Array,
+  after: Uint8Array,
+  start: number,
+  end: number,
+): PixelEdit | null {
+  // Count first, then fill typed arrays: whole-layer edits have a million entries.
+  let count = 0;
+  for (let i = start; i < end; i++) if (before[i] !== after[i]) count++;
+  if (count === 0) return null;
+  const edit: PixelEdit = {
+    kind: 'pixels',
+    label,
+    layerId,
+    offsets: new Uint32Array(count),
+    before: new Uint8Array(count),
+    after: new Uint8Array(count),
+  };
+  for (let i = start, k = 0; i < end; i++) {
+    if (before[i] === after[i]) continue;
+    edit.offsets[k] = i;
+    edit.before[k] = before[i];
+    edit.after[k++] = after[i];
+  }
+  return edit;
+}
+
 export type EditDirection = 'undo' | 'redo';
 
 /**
@@ -229,9 +269,8 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
     case 'pixels': {
       const layer = requireLayer(doc, edit.layerId, edit, direction);
       const values = direction === 'undo' ? edit.before : edit.after;
-      edit.offsets.forEach((offset, i) => {
-        layer.pixels[offset] = values[i];
-      });
+      const { offsets } = edit;
+      for (let i = 0; i < offsets.length; i++) layer.pixels[offsets[i]] = values[i];
       return;
     }
     case 'layer-add':
@@ -334,6 +373,11 @@ export interface PixelEditSession {
   readonly layer: Layer;
   /** Same contract as {@link setPixel}, but remembers each pixel's original value. */
   setPixel(x: number, y: number, index: number): boolean;
+  /**
+   * Sets every pixel to `pixels` (laid out like the layer's), as `setPixel`
+   * would one by one, only faster. For whole-layer previews (moving a layer).
+   */
+  setAll(pixels: Uint8Array): void;
   /** Restores every pixel written so far to its original value. Used to redraw shape previews. */
   revert(): void;
   /**
@@ -347,55 +391,63 @@ export interface PixelEditSession {
 
 /** Starts a session. With `clip`, writes outside those pixels are ignored (e.g. painting inside a selection). */
 export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, clip: Mask | null = null): PixelEditSession {
-  const original = new Map<number, number>();
+  // The layer as it was (nothing else writes to it during a session), and
+  // the range of offsets written since, so revert and finish look only there.
+  const original = layer.pixels.slice();
+  let low = Infinity;
+  let high = -1;
   let finished = false;
+  const checkOpen = () => {
+    if (finished) throw new Error('Pixel edit session already finished');
+  };
+  const wrote = (offset: number) => {
+    if (offset < low) low = offset;
+    if (offset > high) high = offset;
+  };
 
   return {
     layer,
 
     setPixel(x, y, index) {
-      if (finished) throw new Error('Pixel edit session already finished');
+      checkOpen();
       if (!inBounds(doc, x, y) || (clip && !maskHas(clip, x, y))) return false;
-      const offset = y * doc.width + x;
-      const previous = layer.pixels[offset];
       if (!setPixel(doc, layer, x, y, index)) return false;
-      if (!original.has(offset)) original.set(offset, previous);
+      wrote(y * doc.width + x);
       return true;
     },
 
+    setAll(pixels) {
+      checkOpen();
+      if (pixels.length !== layer.pixels.length) throw new RangeError('Pixel array does not match the layer');
+      const { width } = doc;
+      for (let offset = 0; offset < pixels.length; offset++) {
+        if (layer.pixels[offset] === pixels[offset]) continue;
+        if (clip && !maskHas(clip, offset % width, Math.floor(offset / width))) continue;
+        layer.pixels[offset] = pixels[offset];
+        wrote(offset);
+      }
+    },
+
     revert() {
-      if (finished) throw new Error('Pixel edit session already finished');
-      for (const [offset, value] of original) layer.pixels[offset] = value;
-      original.clear();
+      checkOpen();
+      if (high >= low) layer.pixels.set(original.subarray(low, high + 1), low);
+      low = Infinity;
+      high = -1;
     },
 
     restore(x, y) {
-      if (finished) throw new Error('Pixel edit session already finished');
+      checkOpen();
       if (!inBounds(doc, x, y)) return false;
       const offset = y * doc.width + x;
-      const value = original.get(offset);
-      if (value === undefined) return false;
-      original.delete(offset);
-      if (layer.pixels[offset] === value) return false;
-      layer.pixels[offset] = value;
+      if (layer.pixels[offset] === original[offset]) return false;
+      layer.pixels[offset] = original[offset];
       return true;
     },
 
     finish() {
       finished = true;
       // Pixels painted and then painted back to their original value aren't changes.
-      const changed = [...original]
-        .filter(([offset, value]) => layer.pixels[offset] !== value)
-        .sort(([a], [b]) => a - b);
-      if (changed.length === 0) return null;
-      return {
-        kind: 'pixels',
-        label,
-        layerId: layer.id,
-        offsets: Uint32Array.from(changed, ([offset]) => offset),
-        before: Uint8Array.from(changed, ([, value]) => value),
-        after: Uint8Array.from(changed, ([offset]) => layer.pixels[offset]),
-      };
+      return high < low ? null : diffPixels(layer.id, label, original, layer.pixels, low, high + 1);
     },
   };
 }

@@ -17,7 +17,7 @@ import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { rectFromCorners, rectsEqual } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
-import { floatingChange, liftSelection, movedPixels, moveFloating, selectionChange } from '../core/selection.ts';
+import { floatingChange, liftSelection, moveFloating, selectionChange, shiftedPixels } from '../core/selection.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
@@ -500,6 +500,8 @@ const move: Tool = {
     const write = (values: Map<number, number>) => {
       for (const [offset, value] of values) session.setPixel(offset % doc.width, Math.floor(offset / doc.width), value);
     };
+    /** Whole-layer moves rewrite the layer on every pointer move; this saves allocating each time. */
+    let shifted: Uint8Array | undefined;
 
     return {
       move(input) {
@@ -517,7 +519,8 @@ const move: Tool = {
           editor.previewFloating(moved);
           editor.previewSelection(clipMask(moved, doc.width, doc.height));
         } else {
-          write(movedPixels(doc, layer, dx, dy));
+          shifted ??= new Uint8Array(layer.pixels.length);
+          session.setAll(shiftedPixels(doc, layer.pixels, dx, dy, shifted));
         }
         editor.requestRender();
       },

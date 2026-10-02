@@ -70,7 +70,7 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       gesture.lastClientX = e.clientX;
       gesture.lastClientY = e.clientY;
       trackPointer(e);
-      editor.requestRender();
+      editor.requestRender('view');
       return;
     }
 
@@ -131,7 +131,7 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       const zoom = stepZoom(editor.viewport.zoom, direction);
       editor.viewport = zoomAt(editor.viewport, zoom, e.clientX - rect.left, e.clientY - rect.top);
       trackPointer(e);
-      editor.requestRender();
+      editor.requestRender('view');
     },
     { passive: false },
   );

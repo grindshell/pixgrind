@@ -1,5 +1,12 @@
 import { alpha, parseHex, toHex, type Rgba } from '../core/color.ts';
-import { addColorEdit, canAddColor, canRemoveColor, removeColorEdit, setColorEdit } from '../core/paletteEdits.ts';
+import {
+  addColorEdit,
+  canAddColor,
+  canRemoveColor,
+  colorUsage,
+  removeColorEdit,
+  setColorEdit,
+} from '../core/paletteEdits.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { el, iconButton, setButtonLabel } from './dom.ts';
 import type { ColorSlot, Editor } from './editor.ts';
@@ -65,6 +72,13 @@ export function createPalettePanel(editor: Editor): HTMLElement {
   status.setAttribute('role', 'status');
 
   const selectedColor = (): Rgba => doc.palette.colors[editor.primaryIndex - 1] ?? 0xff;
+
+  /** Pixel counts per index, for the delete button. Counting scans every pixel, so only redo it after document changes. */
+  let usage: { revision: number; counts: Uint32Array } | null = null;
+  const colorCounts = (): Uint32Array => {
+    if (usage?.revision !== editor.revision) usage = { revision: editor.revision, counts: colorUsage(doc) };
+    return usage.counts;
+  };
 
   /** Color under the picker, keeping the existing alpha (the native picker is RGB only). */
   const pickerColor = (keepAlphaOf: Rgba): Rgba => ((parseHex(picker.value) & 0xffffff00) | alpha(keepAlphaOf)) >>> 0;
@@ -149,7 +163,9 @@ export function createPalettePanel(editor: Editor): HTMLElement {
       if (document.activeElement !== hexInput) hexInput.value = editable ? toHex(color) : '';
     }
     hexInput.placeholder = editable ? '' : 'transparent';
-    const remove = editable ? canRemoveColor(doc, editor.primaryIndex) : { ok: false, reason: "transparent isn't a palette color" };
+    const remove = editable
+      ? canRemoveColor(doc, editor.primaryIndex, colorCounts())
+      : { ok: false, reason: "transparent isn't a palette color" };
     deleteButton.disabled = !remove.ok;
     setButtonLabel(deleteButton, remove.ok ? 'Delete color' : `Can't delete: ${remove.reason}`);
   };

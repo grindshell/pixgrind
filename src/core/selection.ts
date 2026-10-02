@@ -1,5 +1,6 @@
 import {
   combineEdits,
+  pixelEditFromArray,
   pixelEditFromValues,
   type Edit,
   type FloatingEdit,
@@ -31,27 +32,34 @@ export function selectionChange(before: Mask | null, after: Mask | null, label: 
 }
 
 /**
- * New palette indices for every pixel touched by moving the whole of `layer`
- * by (dx, dy): everything is cleared, then its non-transparent pixels are
- * stamped at the destination. Pixels that land outside the document are
- * dropped.
+ * A whole layer's `pixels` moved by (dx, dy), transparent where nothing
+ * lands. Pixels that land outside the document are dropped. Writes into
+ * `out` (not `pixels` itself) when given, so moves can reuse one buffer.
  */
-export function movedPixels(doc: PixelDocument, layer: Layer, dx: number, dy: number): Map<number, number> {
-  const values = new Map<number, number>();
-  if (dx === 0 && dy === 0) return values;
-  for (let offset = 0; offset < layer.pixels.length; offset++) values.set(offset, TRANSPARENT);
-  for (let y = 0; y < doc.height; y++) {
-    for (let x = 0; x < doc.width; x++) {
-      const index = layer.pixels[y * doc.width + x];
-      if (index !== TRANSPARENT && inBounds(doc, x + dx, y + dy)) values.set((y + dy) * doc.width + x + dx, index);
-    }
+export function shiftedPixels(
+  doc: PixelDocument,
+  pixels: Uint8Array,
+  dx: number,
+  dy: number,
+  out: Uint8Array = new Uint8Array(pixels.length),
+): Uint8Array {
+  const { width, height } = doc;
+  out.fill(TRANSPARENT);
+  // The source columns and rows that stay on the document, copied a row at a time.
+  const left = Math.max(0, -dx);
+  const right = Math.min(width, width - dx);
+  if (right <= left) return out;
+  for (let y = Math.max(0, -dy); y < Math.min(height, height - dy); y++) {
+    const row = y * width;
+    out.set(pixels.subarray(row + left, row + right), (y + dy) * width + left + dx);
   }
-  return values;
+  return out;
 }
 
 /** Moves all of `layer` by (dx, dy), losing pixels moved off the document. Null when nothing would change. */
 export function moveLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): PixelEdit | null {
-  return pixelEditFromValues(layer, label, movedPixels(doc, layer, dx, dy));
+  if (dx === 0 && dy === 0) return null;
+  return pixelEditFromArray(layer, label, shiftedPixels(doc, layer.pixels, dx, dy));
 }
 
 /*

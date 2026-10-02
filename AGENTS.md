@@ -314,6 +314,10 @@ storage without updating this section and the palette-swap design.
   opacity, because palette indices can't blend. The upper layer's
   non-transparent pixels replace the lower layer's. A translucent palette
   color therefore replaces what was under it instead of blending with it.
+- Panels re-render on every editor change, so they keep that cheap: layer
+  thumbnails are sampled down to at most 64px (`layerThumbnailRgba`), and
+  the palette panel recounts color usage only when `Editor.revision`
+  (bumped by every recorded edit, undo and redo) changes.
 - The reference image is **not** a layer. See Reference images below.
 
 ### Reference images
@@ -365,6 +369,14 @@ storage without updating this section and the palette-swap design.
   coordinate conversion. Pixel coordinates are always integers.
 - Redraws go through `Editor.requestRender()` (one per animation frame), never
   direct `render()` calls from input handlers.
+  - `requestRender('view')` says only the view or overlays changed (pan,
+    zoom, brush outline, selection, lasso, reference), so the renderer
+    reuses its layer composite (`RenderOptions.reuseComposite`) instead of
+    recompositing every layer.
+  - The default, `'content'`, recomposites. Use it for anything that changes
+    pixels, the palette, or layer order, visibility or opacity, and when in
+    doubt: a missed `'view'` only costs time, a wrong one shows stale pixels.
+  - Direct `renderer.render()` calls (automation) always recomposite.
 - `render(doc, viewport, overlays)` takes what isn't document data as
   `RenderOverlays`: the reference image and the brush cursor.
 
@@ -530,10 +542,11 @@ storage without updating this section and the palette-swap design.
     Code that changes the document doesn't need to know about floats.
   - Selection tools drop the float at gesture start (`previewFloating(null)`)
     so the new selection shows, and record the drop with the selection.
-  - With no selection, Move moves the whole layer without floating:
-    `movedPixels` from the untouched original on each pointer move, and
-    pixels outside the document are lost on release (`moveLayerEdit` for
-    nudges).
+  - With no selection, Move moves the whole layer without floating: on each
+    pointer move the session is reverted and the layer rewritten with
+    `shiftedPixels` (row copies into a reused buffer) through
+    `PixelEditSession.setAll`. Pixels outside the document are lost on
+    release (`moveLayerEdit` for nudges).
   - A float belongs to a layer (`layerId`). Moving on another layer lifts a
     new float there, replacing (dropping) the old one.
 - Move tool: on each pointer move, `session.revert()`, then rewrite from the
@@ -652,6 +665,12 @@ storage without updating this section and the palette-swap design.
   returns a `PixelEditSession`, then `editor.endStroke()`, which commits it.
   Never call `setPixel` on document layers directly from UI code: the change
   would skip history.
+  - A session copies the layer when it begins and tracks the range of
+    offsets written. `revert` copies that range back, and `finish` diffs it
+    against the copy, so neither costs more than the stroke's extent.
+  - `setAll` writes a whole layer's worth at once. For edits built outside
+    a session, `pixelEditFromArray` diffs a whole-layer array, which is
+    much faster than `pixelEditFromValues`' map for big changes.
 - Strokes that change nothing (or end up back at the original values) don't
   create entries. Undo/redo are ignored while a stroke is in progress.
 

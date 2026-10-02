@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compositeRgba, visibleIndexAt } from './composite.ts';
+import { compositeRgba, layerThumbnailRgba, visibleIndexAt } from './composite.ts';
 import { createLayer } from './layer.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, setPixel, type PixelDocument } from './pixelDocument.ts';
@@ -77,6 +77,36 @@ describe('compositeRgba', () => {
     expect(compositeRgba(doc, out)).toBe(out);
     expect(Array.from(out)).toEqual([0, 0, 0, 0]);
     expect(() => compositeRgba(doc, new Uint8ClampedArray(8))).toThrow(RangeError);
+  });
+});
+
+describe('layerThumbnailRgba', () => {
+  it('draws the layer alone, at full opacity, in its own colors', () => {
+    const doc = twoLayerDoc();
+    const [bottom, top] = doc.layers;
+    setPixel(doc, bottom, 0, 0, RED);
+    setPixel(doc, top, 1, 0, HALF_GREEN);
+    top.opacity = 0.5;
+    top.visible = false;
+    const out = layerThumbnailRgba(doc, top, 2, 1);
+    expect(pixel(out, 0)).toEqual([0, 0, 0, 0]);
+    expect(pixel(out, 1)).toEqual([0, 255, 0, 128]);
+  });
+
+  it('samples the nearest pixel when scaled down', () => {
+    const doc = createDocument(4, 4, palette);
+    const [layer] = doc.layers;
+    // Pixel centers of a 2×2 thumbnail land on (1, 1), (3, 1), (1, 3) and (3, 3).
+    setPixel(doc, layer, 3, 1, RED);
+    setPixel(doc, layer, 1, 3, BLUE);
+    setPixel(doc, layer, 0, 0, BLUE);
+    const out = layerThumbnailRgba(doc, layer, 2, 2);
+    expect([0, 1, 2, 3].map((i) => pixel(out, i))).toEqual([
+      [0, 0, 0, 0],
+      [255, 0, 0, 255],
+      [0, 0, 255, 255],
+      [0, 0, 0, 0],
+    ]);
   });
 });
 

@@ -1,3 +1,4 @@
+import type { Layer } from './layer.ts';
 import { TRANSPARENT, type Palette } from './palette.ts';
 import { inBounds, type PixelDocument } from './pixelDocument.ts';
 
@@ -66,6 +67,34 @@ export function visibleIndexAt(doc: PixelDocument, x: number, y: number): number
     if (index !== TRANSPARENT && index <= doc.palette.colors.length) return index;
   }
   return TRANSPARENT;
+}
+
+/**
+ * One layer alone at full opacity, scaled to `width`×`height` by taking the
+ * nearest pixel, as RGBA bytes. For thumbnails: a small one of a large layer
+ * costs its own size, not the layer's.
+ */
+export function layerThumbnailRgba(
+  doc: PixelDocument,
+  layer: Layer,
+  width: number,
+  height: number,
+): Uint8ClampedArray<ArrayBuffer> {
+  const out = new Uint8ClampedArray(width * height * 4);
+  const lookup = paletteLookup(doc.palette);
+  const columns = Array.from({ length: width }, (_, x) => Math.floor(((x + 0.5) * doc.width) / width));
+  for (let y = 0; y < height; y++) {
+    const row = Math.floor(((y + 0.5) * doc.height) / height) * doc.width;
+    for (let x = 0; x < width; x++) {
+      const color = lookup[layer.pixels[row + columns[x]]];
+      const o = (y * width + x) * 4;
+      out[o] = color >>> 24;
+      out[o + 1] = (color >>> 16) & 0xff;
+      out[o + 2] = (color >>> 8) & 0xff;
+      out[o + 3] = color & 0xff;
+    }
+  }
+  return out;
 }
 
 /** Index → packed color for all 256 indices. Missing entries are transparent. */

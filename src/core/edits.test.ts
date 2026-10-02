@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdit, beginPixelEdit, combineEdits, pixelEditFromValues, type PixelEdit } from './edits.ts';
+import {
+  applyEdit,
+  beginPixelEdit,
+  combineEdits,
+  pixelEditFromArray,
+  pixelEditFromValues,
+  type PixelEdit,
+} from './edits.ts';
 import { rectMask } from './mask.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, getPixel, setPixel, type PixelDocument } from './pixelDocument.ts';
@@ -100,6 +107,22 @@ describe('beginPixelEdit', () => {
     expect(clipped.setPixel(1, 1, 1)).toBe(true);
   });
 
+  it('setAll() writes a whole layer, clipped, and reverts like single writes', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const [layer] = doc.layers;
+    const session = beginPixelEdit(doc, layer, 'Move', rectMask({ x: 0, y: 0, width: 4, height: 2 }));
+    session.setAll(new Uint8Array(16).fill(2));
+    // Rows 2 and 3 are outside the clip.
+    expect(Array.from(layer.pixels)).toEqual([...Array(8).fill(2), ...Array(8).fill(0)]);
+    session.revert();
+    expect(layer.pixels[0]).toBe(1);
+    expect(layer.pixels[1]).toBe(0);
+    session.setAll(Uint8Array.from({ length: 16 }, (_, i) => (i === 5 ? 3 : i === 0 ? 1 : 0)));
+    const edit = session.finish();
+    expect(Array.from(edit!.offsets)).toEqual([5]);
+    expect(() => beginPixelEdit(doc, layer, 'x').setAll(new Uint8Array(3))).toThrow(RangeError);
+  });
+
   it('cannot be written to after finishing', () => {
     const doc = createDocument(2, 2, palette);
     const session = beginPixelEdit(doc, doc.layers[0], 'Pencil');
@@ -154,6 +177,26 @@ describe('pixelEditFromValues', () => {
   it('is null when nothing changes', () => {
     const doc = docWithPixel(0, 0, 1);
     expect(pixelEditFromValues(doc.layers[0], 'Set', new Map([[0, 1]]))).toBeNull();
+  });
+});
+
+describe('pixelEditFromArray', () => {
+  it('keeps only the pixels that differ from the layer', () => {
+    const doc = docWithPixel(1, 0, 2);
+    const after = new Uint8Array(16);
+    after[0] = 1;
+    after[1] = 2;
+    after[15] = 3;
+    const edit = pixelEditFromArray(doc.layers[0], 'Set', after);
+    expect(Array.from(edit!.offsets)).toEqual([0, 15]);
+    expect(Array.from(edit!.before)).toEqual([0, 0]);
+    expect(Array.from(edit!.after)).toEqual([1, 3]);
+  });
+
+  it('is null when nothing changes, and rejects arrays of another size', () => {
+    const doc = docWithPixel(0, 0, 1);
+    expect(pixelEditFromArray(doc.layers[0], 'Set', doc.layers[0].pixels.slice())).toBeNull();
+    expect(() => pixelEditFromArray(doc.layers[0], 'Set', new Uint8Array(3))).toThrow(RangeError);
   });
 });
 

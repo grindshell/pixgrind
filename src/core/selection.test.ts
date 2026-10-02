@@ -11,12 +11,12 @@ import {
   dropFloatingEdit,
   invertSelectionEdit,
   liftSelection,
-  movedPixels,
   moveFloating,
   moveLayerEdit,
   moveSelectionEdit,
   selectionChange,
   selectionEdit,
+  shiftedPixels,
 } from './selection.ts';
 
 const palette = createPalette('test', [0xff0000ff, 0x00ff00ff, 0x0000ffff]);
@@ -86,28 +86,23 @@ describe('invertSelectionEdit', () => {
   });
 });
 
-describe('movedPixels', () => {
-  it('moves the whole layer, stamping only non-transparent pixels', () => {
-    const doc = docFrom([
-      '1200',
-      '0300',
-      '0000',
-    ]);
-    const values = movedPixels(doc, doc.layers[0], 2, 1);
-    for (const [offset, value] of values) doc.layers[0].pixels[offset] = value;
-    expect(rows(doc)).toEqual([
-      '0000',
-      '0012',
-      '0003',
-    ]);
+describe('shiftedPixels', () => {
+  const shifted = (source: string[], dx: number, dy: number, out?: Uint8Array): string[] => {
+    const doc = docFrom(source);
+    doc.layers[0].pixels.set(shiftedPixels(doc, doc.layers[0].pixels, dx, dy, out));
+    return rows(doc);
+  };
+
+  it('moves the whole layer, transparent where nothing lands', () => {
+    expect(shifted(['1200', '0300', '0000'], 2, 1)).toEqual(['0000', '0012', '0003']);
+    expect(shifted(['1200', '0300', '0045'], -1, -1)).toEqual(['3000', '0450', '0000']);
+    expect(shifted(['12', '34'], 0, 0)).toEqual(['12', '34']);
   });
 
-  it('drops pixels moved off the document, and is empty for a zero move', () => {
-    const doc = docFrom(['12']);
-    expect(movedPixels(doc, doc.layers[0], 0, 0).size).toBe(0);
-    const values = movedPixels(doc, doc.layers[0], 1, 0);
-    for (const [offset, value] of values) doc.layers[0].pixels[offset] = value;
-    expect(rows(doc)).toEqual(['01']);
+  it('drops pixels moved off the document, and clears a reused buffer', () => {
+    expect(shifted(['12'], 1, 0)).toEqual(['01']);
+    expect(shifted(['12', '34'], 2, 0, Uint8Array.of(9, 9, 9, 9))).toEqual(['00', '00']);
+    expect(shifted(['12', '34'], 0, -5)).toEqual(['00', '00']);
   });
 });
 
