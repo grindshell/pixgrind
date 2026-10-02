@@ -12,11 +12,11 @@ import {
   invertSelectionEdit,
   liftSelection,
   moveFloating,
-  moveLayerEdit,
   moveSelectionEdit,
   selectionChange,
   selectionEdit,
   shiftedPixels,
+  shiftLayerEdit,
 } from './selection.ts';
 
 const palette = createPalette('test', [0xff0000ff, 0x00ff00ff, 0x0000ffff]);
@@ -106,11 +106,11 @@ describe('shiftedPixels', () => {
   });
 });
 
-describe('moveLayerEdit', () => {
+describe('shiftLayerEdit', () => {
   it('moves the whole layer as one undoable edit', () => {
     const doc = docFrom(['120']);
     const history = new History();
-    perform(doc, history, moveLayerEdit(doc, doc.layers[0], 1, 0));
+    perform(doc, history, shiftLayerEdit(doc, doc.layers[0], 1, 0));
     expect(rows(doc)).toEqual(['012']);
     history.undo(doc);
     expect(rows(doc)).toEqual(['120']);
@@ -118,9 +118,9 @@ describe('moveLayerEdit', () => {
 
   it('is null when nothing would change', () => {
     const doc = docFrom(['12']);
-    expect(moveLayerEdit(doc, doc.layers[0], 0, 0)).toBeNull();
+    expect(shiftLayerEdit(doc, doc.layers[0], 0, 0)).toBeNull();
     const empty = createDocument(3, 3, palette);
-    expect(moveLayerEdit(empty, empty.layers[0], 1, 1)).toBeNull();
+    expect(shiftLayerEdit(empty, empty.layers[0], 1, 1)).toBeNull();
   });
 });
 

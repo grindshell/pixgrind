@@ -546,7 +546,8 @@ storage without updating this section and the palette-swap design.
     pointer move the session is reverted and the layer rewritten with
     `shiftedPixels` (row copies into a reused buffer) through
     `PixelEditSession.setAll`. Pixels outside the document are lost on
-    release (`moveLayerEdit` for nudges).
+    release (`shiftLayerEdit` for nudges; `moveLayerEdit` in
+    `core/layerEdits.ts` is reordering, a different thing).
   - A float belongs to a layer (`layerId`). Moving on another layer lifts a
     new float there, replacing (dropping) the old one.
 - Move tool: on each pointer move, `session.revert()`, then rewrite from the

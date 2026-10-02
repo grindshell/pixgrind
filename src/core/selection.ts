@@ -57,7 +57,7 @@ export function shiftedPixels(
 }
 
 /** Moves all of `layer` by (dx, dy), losing pixels moved off the document. Null when nothing would change. */
-export function moveLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): PixelEdit | null {
+export function shiftLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): PixelEdit | null {
   if (dx === 0 && dy === 0) return null;
   return pixelEditFromArray(layer, label, shiftedPixels(doc, layer.pixels, dx, dy));
 }
@@ -160,11 +160,11 @@ function stampValues(
  * Moves the selected pixels of `layer` by (dx, dy) as a float, lifting them
  * first unless they already float, so pixels moved past the edge are kept
  * until the float is dropped. Without a selection the whole layer moves
- * instead (`moveLayerEdit`), and pixels moved off the document are lost.
+ * instead (`shiftLayerEdit`), and pixels moved off the document are lost.
  */
 export function moveSelectionEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): Edit | null {
   const origin = doc.floating?.layerId === layer.id ? doc.floating : liftSelection(doc, layer);
-  if (!origin) return moveLayerEdit(doc, layer, dx, dy, label);
+  if (!origin) return shiftLayerEdit(doc, layer, dx, dy, label);
   if (dx === 0 && dy === 0) return null;
   const { values, moved } = moveFloating(doc, layer, origin, dx, dy);
   return combineEdits(label, [

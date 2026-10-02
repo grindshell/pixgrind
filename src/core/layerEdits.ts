@@ -1,11 +1,12 @@
-import type {
-  BatchEdit,
-  Edit,
-  LayerAddEdit,
-  LayerMoveEdit,
-  LayerProps,
-  LayerPropsEdit,
-  LayerRemoveEdit,
+import {
+  pixelEditFromArray,
+  type BatchEdit,
+  type Edit,
+  type LayerAddEdit,
+  type LayerMoveEdit,
+  type LayerProps,
+  type LayerPropsEdit,
+  type LayerRemoveEdit,
 } from './edits.ts';
 import { newId } from './id.ts';
 import { createLayer, type Layer } from './layer.ts';
@@ -124,24 +125,15 @@ export function mergeDownEdit(doc: PixelDocument, layerId: string): BatchEdit {
   const upper = doc.layers[index];
   const lower = doc.layers[index - 1];
 
-  const offsets: number[] = [];
-  for (let i = 0; i < upper.pixels.length; i++) {
-    const value = upper.pixels[i];
-    if (value !== TRANSPARENT && value !== lower.pixels[i]) offsets.push(i);
+  const merged = lower.pixels.slice();
+  for (let i = 0; i < merged.length; i++) {
+    if (upper.pixels[i] !== TRANSPARENT) merged[i] = upper.pixels[i];
   }
 
   const label = 'Merge down';
   const edits: Edit[] = [];
-  if (offsets.length > 0) {
-    edits.push({
-      kind: 'pixels',
-      label,
-      layerId: lower.id,
-      offsets: Uint32Array.from(offsets),
-      before: Uint8Array.from(offsets, (i) => lower.pixels[i]),
-      after: Uint8Array.from(offsets, (i) => upper.pixels[i]),
-    });
-  }
+  const pixels = pixelEditFromArray(lower, label, merged);
+  if (pixels) edits.push(pixels);
   edits.push({ kind: 'layer-remove', label, layer: upper, index });
   return { kind: 'batch', label, edits };
 }

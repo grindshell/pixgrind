@@ -7,7 +7,7 @@ import {
   removeColorEdit,
   setColorEdit,
 } from '../core/paletteEdits.ts';
-import { TRANSPARENT } from '../core/palette.ts';
+import { colorForIndex, TRANSPARENT } from '../core/palette.ts';
 import { el, iconButton, setButtonLabel } from './dom.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 
@@ -71,7 +71,9 @@ export function createPalettePanel(editor: Editor): HTMLElement {
   const status = el('p', 'panel-status');
   status.setAttribute('role', 'status');
 
-  const selectedColor = (): Rgba => doc.palette.colors[editor.primaryIndex - 1] ?? 0xff;
+  /** The primary color, or opaque black when it's transparent (e.g. as the color a new swatch copies). */
+  const selectedColor = (): Rgba =>
+    editor.primaryIndex === TRANSPARENT ? 0xff : colorForIndex(doc.palette, editor.primaryIndex);
 
   /** Pixel counts per index, for the delete button. Counting scans every pixel, so only redo it after document changes. */
   let usage: { revision: number; counts: Uint32Array } | null = null;
@@ -178,7 +180,7 @@ export function createPalettePanel(editor: Editor): HTMLElement {
     setButtonLabel(swatch, slots.length ? `${name}, ${slots.map(slotName).join(' and ')} button` : name);
   };
 
-  const describe = (index: number) => (index === TRANSPARENT ? 'transparent' : toHex(doc.palette.colors[index - 1] ?? 0));
+  const describe = (index: number) => (index === TRANSPARENT ? 'transparent' : toHex(colorForIndex(doc.palette, index)));
 
   const renderWell = (well: HTMLElement, index: number) => {
     well.classList.toggle('is-transparent', index === TRANSPARENT);
