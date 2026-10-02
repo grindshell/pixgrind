@@ -10,6 +10,8 @@ import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
+import { createToolbar } from './toolbar.ts';
+import { getTool, type ToolId } from './tools.ts';
 
 /**
  * Editor session state: the document plus everything about how it is being
@@ -21,6 +23,7 @@ export class Editor {
   readonly renderer: CanvasRenderer;
   readonly history = new History();
   viewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0 };
+  tool: ToolId = 'pencil';
   /** Palette index the primary (left) button paints with. */
   primaryIndex = 1;
   private activeLayerId: string;
@@ -54,6 +57,12 @@ export class Editor {
 
   setPrimaryIndex(index: number): void {
     this.primaryIndex = index;
+    this.notify();
+  }
+
+  setTool(tool: ToolId): void {
+    if (this.tool === tool) return;
+    this.tool = tool;
     this.notify();
   }
 
@@ -167,17 +176,17 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   const title = el('h1', 'app-title');
   title.textContent = 'Pixgrind';
 
-  stage.append(canvas);
-  layout.append(sidebar, stage);
-  root.append(layout);
-
   const editor = new Editor(doc, canvas);
+  stage.append(canvas);
   sidebar.append(title, createHistoryControls(editor), createPalettePanel(editor), createLayersPanel(editor));
+  layout.append(sidebar, createToolbar(editor), stage);
+  root.append(layout);
   attachCanvasInput(canvas, editor);
   attachShortcuts(window, editor);
 
-  // Hidden layers can't be drawn on; show that with the cursor.
-  const syncStageLock = () => stage.classList.toggle('is-locked', !editor.activeLayer.visible);
+  // Hidden layers can't be painted on; show that with the cursor.
+  const syncStageLock = () =>
+    stage.classList.toggle('is-locked', !editor.activeLayer.visible && getTool(editor.tool).paints);
   editor.onChange(syncStageLock);
   syncStageLock();
 

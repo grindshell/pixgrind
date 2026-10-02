@@ -29,8 +29,28 @@ body,
 
 .editor {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px auto 1fr;
   height: 100%;
+}
+
+.tool-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 5px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.tool-strip .icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.icon-button[aria-pressed='true'].tool-button {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--accent);
 }
 
 .sidebar {

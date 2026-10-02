@@ -1,5 +1,5 @@
 import { TRANSPARENT, type Palette } from './palette.ts';
-import type { PixelDocument } from './pixelDocument.ts';
+import { inBounds, type PixelDocument } from './pixelDocument.ts';
 
 /**
  * Flattens the visible layers, bottom to top, into straight-alpha RGBA bytes
@@ -49,6 +49,23 @@ export function compositeRgba(
     }
   }
   return out;
+}
+
+/**
+ * The palette index the user sees at (x, y): the topmost visible layer with a
+ * non-transparent pixel there that maps to a palette color. Transparent (0)
+ * when there is none or (x, y) is out of bounds.
+ */
+export function visibleIndexAt(doc: PixelDocument, x: number, y: number): number {
+  if (!inBounds(doc, x, y)) return TRANSPARENT;
+  const offset = y * doc.width + x;
+  for (let i = doc.layers.length - 1; i >= 0; i--) {
+    const layer = doc.layers[i];
+    if (!layer.visible || layer.opacity <= 0) continue;
+    const index = layer.pixels[offset];
+    if (index !== TRANSPARENT && index <= doc.palette.colors.length) return index;
+  }
+  return TRANSPARENT;
 }
 
 /** Index → packed color for all 256 indices. Missing entries are transparent. */

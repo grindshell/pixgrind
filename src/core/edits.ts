@@ -162,6 +162,8 @@ export interface PixelEditSession {
   readonly layer: Layer;
   /** Same contract as {@link setPixel}, but remembers each pixel's original value. */
   setPixel(x: number, y: number, index: number): boolean;
+  /** Restores every pixel written so far to its original value. Used to redraw shape previews. */
+  revert(): void;
   /** Ends the session. Returns null when no pixel ended up different from its original value. */
   finish(): PixelEdit | null;
 }
@@ -181,6 +183,12 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string):
       if (!setPixel(doc, layer, x, y, index)) return false;
       if (!original.has(offset)) original.set(offset, previous);
       return true;
+    },
+
+    revert() {
+      if (finished) throw new Error('Pixel edit session already finished');
+      for (const [offset, value] of original) layer.pixels[offset] = value;
+      original.clear();
     },
 
     finish() {

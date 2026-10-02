@@ -21,13 +21,18 @@ Core features:
 
 ## Status
 
-Bootstrapped walking skeleton:
+Built so far:
 
 - Document model with layers and an indexed palette (`src/core/`).
-- Layer compositing, Bresenham line rasterization, color/hex utilities.
+- Layer compositing, rasterization (line, rect), flood fill, color/hex
+  utilities.
 - Canvas renderer with checkerboard backdrop, integer zoom, crisp scaling.
-- Input: left-drag paints the selected color, right-drag erases, middle-drag
-  pans, wheel zooms around the cursor.
+- Tools in a vertical strip beside the canvas: Pencil (B), Eraser (E), Line
+  (L), Rectangle (R), Filled rectangle (Shift+R), Fill (G), Eyedropper (I).
+  - The left button uses the primary color and the right button uses
+    transparent.
+  - Alt+click picks a color whatever the tool.
+  - Middle-drag pans and the wheel zooms around the cursor.
 - Palette panel showing the default PICO-8 palette; click to select a color.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y.
@@ -35,10 +40,14 @@ Bootstrapped walking skeleton:
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 
-Not built yet, roughly in priority order: tool selection (line, rect, fill,
-eyedropper, select/move), palette management and swap, image import/export,
-reference images, project files. Layers panel follow-ups: drag-and-drop
-reordering, keyboard shortcuts for layer actions.
+Not built yet, roughly in priority order: select/move tool, palette
+management and swap, image import/export, reference images, project files.
+Follow-ups:
+- Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
+  actions.
+- Tools: a choosable secondary color (the right button is fixed to
+  transparent), brush sizes, shape previews that react to Shift being pressed
+  without moving the pointer.
 
 ## Git
 
@@ -94,14 +103,15 @@ src/
   main.ts        entry point; mounts the editor
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
-                 composite, raster, edits (undoable changes), layerEdits
-                 (edit constructors for layer operations), history
+                 composite (+ visibleIndexAt), raster (line, rect, shape
+                 constraints), floodFill, edits (undoable changes),
+                 layerEdits (edit constructors for layer operations), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
   io/            (not created yet) import/export: images, palette files,
                  project files
-  ui/            Editor state + mounting, canvas input, keyboard shortcuts,
-                 history controls, palette panel, layers panel, DOM helpers
-                 (dom.ts) and inline SVG icons (icons.ts)
+  ui/            Editor state + mounting, canvas input, tools + tool strip,
+                 keyboard shortcuts, history controls, palette panel, layers
+                 panel, DOM helpers (dom.ts) and inline SVG icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
 ```
 
@@ -192,10 +202,30 @@ storage without updating this section and the palette-swap design.
 ### Tools and input
 
 - Pointer Events (mouse, pen, touch), with pointer capture during gestures.
-- Pointer events skip pixels on fast strokes: strokes connect the previous and
-  current pixel with `plotLine` (Bresenham).
-- Planned tools: pencil, eraser (writes index 0), line, rectangle, fill
-  (iterative flood fill, not recursive), eyedropper, select/move.
+  `ui/canvasInput.ts` turns them into tool gestures in document pixel
+  coordinates and only forwards a move when the pixel or Shift state changes.
+- Tools live in `ui/tools.ts`, one `Tool` object each:
+  - `begin(editor, input, index)` returns a `ToolGesture` with `move`/`end`.
+    `index` is the primary color for the left button and `TRANSPARENT` for
+    the right.
+  - `paints: true` tools are blocked while the active layer is hidden.
+  - `shortcut` is matched case-sensitively against `KeyboardEvent.key`, so
+    `"R"` means Shift+R.
+  - The `TOOLS` array order is the toolbar order.
+
+  To add a tool: write the object, add its id to `ToolId`, add an icon in
+  `ui/icons.ts`, and put it in `TOOLS`. Keep geometry in `core/`.
+- Painting tools write through `editor.beginStroke(label)` and commit in
+  `end` with `editor.endStroke()`:
+  - Freehand tools (pencil, eraser) connect consecutive positions with
+    `plotLine` so fast strokes have no gaps.
+  - Shape tools (line, rect) call `session.revert()` and redraw on every
+    move. The preview lives in the layer, needs no overlay, and the final
+    shape is one undo entry.
+- Fill is 4-connected (`core/floodFill.ts`, iterative). 8-connected fills
+  leak through diagonal one-pixel outlines.
+- Eyedropper (`visibleIndexAt`) picks the topmost visible color, not the
+  active layer's, and ignores transparent pixels.
 
 ### Undo/redo
 
@@ -258,9 +288,18 @@ storage without updating this section and the palette-swap design.
   exercise the real input path. Compute client coordinates from
   `pixgrind.viewport`. Select it with `.stage-canvas`: plain `canvas` matches
   a layer thumbnail in the sidebar first.
-- Screenshots of the Browser pane can time out when the app window is
-  occluded. Reading state and canvas pixels (`getImageData`) through
-  JavaScript works regardless.
+- When the app window is occluded, the page reports
+  `visibilityState: 'hidden'` and the browser stops running
+  `requestAnimationFrame` and ResizeObserver callbacks. Screenshots time out,
+  the canvas isn't redrawn, and its backing size can be stale. State checks
+  still work. To check pixel output, render synchronously first, then read
+  pixels with `getImageData`:
+  `pixgrind.renderer.resize(w, h); pixgrind.renderer.render(pixgrind.doc, pixgrind.viewport)`.
+- On Windows the Vite dev server occasionally misses a file change made
+  right after another edit to the same file. It then keeps serving the old
+  module, and you'll see errors like "does not provide an export named …"
+  for code that exists. Check with `fetch('/src/…')`, and restart the dev
+  server if the source is stale.
 
 ## Conventions
 

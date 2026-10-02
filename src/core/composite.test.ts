@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compositeRgba } from './composite.ts';
+import { compositeRgba, visibleIndexAt } from './composite.ts';
 import { createLayer } from './layer.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, setPixel, type PixelDocument } from './pixelDocument.ts';
@@ -77,5 +77,36 @@ describe('compositeRgba', () => {
     expect(compositeRgba(doc, out)).toBe(out);
     expect(Array.from(out)).toEqual([0, 0, 0, 0]);
     expect(() => compositeRgba(doc, new Uint8ClampedArray(8))).toThrow(RangeError);
+  });
+});
+
+describe('visibleIndexAt', () => {
+  it('returns the topmost visible non-transparent index', () => {
+    const doc = twoLayerDoc();
+    const [bottom, top] = doc.layers;
+    setPixel(doc, bottom, 0, 0, RED);
+    setPixel(doc, top, 0, 0, BLUE);
+    setPixel(doc, bottom, 1, 0, RED);
+    expect(visibleIndexAt(doc, 0, 0)).toBe(BLUE);
+    expect(visibleIndexAt(doc, 1, 0)).toBe(RED);
+  });
+
+  it('skips hidden and fully transparent layers', () => {
+    const doc = twoLayerDoc();
+    const [bottom, top] = doc.layers;
+    setPixel(doc, bottom, 0, 0, RED);
+    setPixel(doc, top, 0, 0, BLUE);
+    top.visible = false;
+    expect(visibleIndexAt(doc, 0, 0)).toBe(RED);
+    top.visible = true;
+    top.opacity = 0;
+    expect(visibleIndexAt(doc, 0, 0)).toBe(RED);
+  });
+
+  it('ignores indices with no palette color, and out-of-bounds points', () => {
+    const doc = twoLayerDoc();
+    setPixel(doc, doc.layers[1], 0, 0, 200);
+    expect(visibleIndexAt(doc, 0, 0)).toBe(0);
+    expect(visibleIndexAt(doc, 5, 0)).toBe(0);
   });
 });

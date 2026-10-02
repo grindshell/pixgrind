@@ -54,6 +54,20 @@ describe('beginPixelEdit', () => {
     expect(session.finish()).toBeNull();
   });
 
+  it('revert() restores originals and forgets them', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const [layer] = doc.layers;
+    const session = beginPixelEdit(doc, layer, 'Line');
+    session.setPixel(0, 0, 2);
+    session.setPixel(1, 0, 2);
+    session.revert();
+    expect([getPixel(doc, layer, 0, 0), getPixel(doc, layer, 1, 0)]).toEqual([1, 0]);
+    session.setPixel(2, 0, 3);
+    const edit = session.finish();
+    expect(Array.from(edit!.offsets)).toEqual([2]);
+    expect(Array.from(edit!.before)).toEqual([0]);
+  });
+
   it('cannot be written to after finishing', () => {
     const doc = createDocument(2, 2, palette);
     const session = beginPixelEdit(doc, doc.layers[0], 'Pencil');
