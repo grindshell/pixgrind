@@ -1,10 +1,12 @@
+import { brushMask, clampBrushSize, DEFAULT_BRUSH, type Brush } from '../core/brush.ts';
 import type { Rgba } from '../core/color.ts';
 import { applyEdit, beginPixelEdit, type Edit, type PixelEdit, type PixelEditSession } from '../core/edits.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import { findLayer, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
+import type { Point } from '../core/raster.ts';
 import type { Rect } from '../core/rect.ts';
-import { CanvasRenderer } from '../render/canvasRenderer.ts';
+import { CanvasRenderer, type BrushCursor } from '../render/canvasRenderer.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
@@ -13,6 +15,7 @@ import { createFilePanel } from './filePanel.ts';
 import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
 import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
+import { createBrushPanel } from './brushPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
 import { createReferencePanel } from './referencePanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
@@ -32,6 +35,10 @@ export class Editor {
   tool: ToolId = 'pencil';
   /** Palette index the primary (left) button paints with. */
   primaryIndex = 1;
+  /** Size and shape for the brush tools, shared by all of them. Change via `setBrush`. */
+  brush: Brush = { ...DEFAULT_BRUSH };
+  /** Document pixel under the pointer, or null when it's off the canvas. Drives the brush outline. */
+  pointer: Point | null = null;
   /** Tracing guide shown with the artwork; never part of the document. Change via `setReference`/`updateReference`. */
   reference: ReferenceImage | null = null;
   private activeLayerId: string;
@@ -85,6 +92,8 @@ export class Editor {
     if (index < 0) throw new Error(`Layer ${layerId} not found`);
     this.activeLayerId = layerId;
     this.activeIndexHint = index;
+    // The brush outline hides over hidden layers.
+    this.requestRender();
     this.notify();
   }
 
@@ -96,7 +105,24 @@ export class Editor {
   setTool(tool: ToolId): void {
     if (this.tool === tool) return;
     this.tool = tool;
+    this.requestRender();
     this.notify();
+  }
+
+  setBrush(changes: Partial<Brush>): void {
+    const brush = { ...this.brush, ...changes };
+    brush.size = clampBrushSize(brush.size);
+    if (brush.size === this.brush.size && brush.shape === this.brush.shape) return;
+    this.brush = brush;
+    this.requestRender();
+    this.notify();
+  }
+
+  /** Called by canvas input as the pointer moves over (or leaves) the canvas. */
+  setPointer(pointer: Point | null): void {
+    if (pointer?.x === this.pointer?.x && pointer?.y === this.pointer?.y) return;
+    this.pointer = pointer;
+    if (getTool(this.tool).brush) this.requestRender();
   }
 
   /**
@@ -240,8 +266,15 @@ export class Editor {
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
-      this.renderer.render(this.doc, this.viewport, this.reference);
+      this.renderer.render(this.doc, this.viewport, { reference: this.reference, brush: this.brushCursor() });
     });
+  }
+
+  /** The brush outline to draw under the pointer, when the current tool paints with the brush. */
+  private brushCursor(): BrushCursor | null {
+    const tool = getTool(this.tool);
+    if (!this.pointer || !tool.brush || !this.activeLayer.visible) return null;
+    return { ...this.pointer, mask: brushMask(this.brush) };
   }
 
   /** Fits the whole document in view at the largest whole-number zoom. */
@@ -295,6 +328,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
     title,
     createHistoryControls(editor),
     filePanel.element,
+    createBrushPanel(editor),
     createPalettePanel(editor),
     createPaletteLibraryPanel(editor, openPaletteLibrary()),
     createReferencePanel(editor),

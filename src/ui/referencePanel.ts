@@ -8,7 +8,7 @@ import {
 import { chooseFile, fileBaseName } from '../io/files.ts';
 import type { ProjectReference } from '../io/projectFile.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
-import { checkbox, el, fieldRow, textButton } from './dom.ts';
+import { checkbox, el, fieldRow, slider, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
 import type { ToolId } from './tools.ts';
 
@@ -168,25 +168,3 @@ function formatScale(scale: number): string {
   return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
 }
 
-/** A labeled range input with a value readout. `set` leaves the value alone while the user is dragging it. */
-function slider(
-  text: string,
-  min: number,
-  max: number,
-  onInput: (value: number) => void,
-): { row: HTMLDivElement; input: HTMLInputElement; set: (value: number, readout: string) => void } {
-  const caption = el('span', 'field-label slider-label');
-  caption.textContent = text;
-  const input = el('input', 'slider');
-  input.type = 'range';
-  input.min = String(min);
-  input.max = String(max);
-  input.setAttribute('aria-label', text);
-  const value = el('span', 'slider-value');
-  input.addEventListener('input', () => onInput(Number(input.value)));
-  const set = (next: number, readout: string) => {
-    if (document.activeElement !== input) input.value = String(next);
-    value.textContent = readout;
-  };
-  return { row: fieldRow(caption, input, value), input, set };
-}

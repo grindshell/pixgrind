@@ -41,6 +41,29 @@ export function checkbox(text: string, onChange: (checked: boolean) => void): { 
   return { label, input };
 }
 
+/** A labeled range input with a value readout. `set` leaves the value alone while the user is dragging it. */
+export function slider(
+  text: string,
+  min: number,
+  max: number,
+  onInput: (value: number) => void,
+): { row: HTMLDivElement; input: HTMLInputElement; set: (value: number, readout: string) => void } {
+  const caption = el('span', 'field-label slider-label');
+  caption.textContent = text;
+  const input = el('input', 'slider');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.setAttribute('aria-label', text);
+  const value = el('span', 'slider-value');
+  input.addEventListener('input', () => onInput(Number(input.value)));
+  const set = (next: number, readout: string) => {
+    if (document.activeElement !== input) input.value = String(next);
+    value.textContent = readout;
+  };
+  return { row: fieldRow(caption, input, value), input, set };
+}
+
 export function option(value: string, label: string): HTMLOptionElement {
   const opt = el('option');
   opt.value = value;

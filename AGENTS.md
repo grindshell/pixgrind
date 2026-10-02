@@ -34,6 +34,9 @@ Built so far:
     transparent.
   - Alt+click picks a color whatever the tool.
   - Middle-drag pans and the wheel zooms around the cursor.
+- Brush panel: size 1–64 and round/square shape, shared by Pencil, Eraser,
+  Line and both Rectangles. `[` / `]` step the size. The canvas outlines
+  the brush under the pointer.
 - Selection:
   - Rectangle marquee. Ctrl+A selects all; Ctrl+D or Escape deselects.
   - Delete/Backspace clears the selected pixels.
@@ -79,9 +82,12 @@ Follow-ups:
   - Autosave/crash recovery (e.g. IndexedDB).
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
-- Tools: a choosable secondary color (the right button is fixed to
-  transparent), brush sizes, shape previews that react to Shift being pressed
-  without moving the pointer.
+- Tools:
+  - A choosable secondary color (the right button is fixed to
+    transparent).
+  - Shape previews that react to Shift being pressed without moving the
+    pointer.
+  - Pixel-perfect freehand strokes (no L-shaped corners).
 - Selection:
   - A floating selection that keeps pixels moved off-canvas until it is
     committed (today they are dropped on release).
@@ -149,7 +155,8 @@ src/
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
                  composite (+ visibleIndexAt), raster (line, rect, shape
-                 constraints), rect (Rect geometry), floodFill, image (RGBA
+                 constraints), brush (footprints, brush lines and
+                 rectangles), rect (Rect geometry), floodFill, image (RGBA
                  ↔ indices, upscale, flatten), edits (undoable changes),
                  layerEdits / selection / paletteEdits / documentEdits (edit
                  constructors), history
@@ -164,7 +171,7 @@ src/
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
                  fileCommands (open/save project, open/add/export image),
-                 keyboard shortcuts,
+                 keyboard shortcuts, brush panel,
                  history controls, file panel, palette and palettes (library)
                  panels, layers panel, reference panel (+ loadReferenceFile),
                  DOM helpers (dom.ts) and inline SVG
@@ -286,7 +293,8 @@ storage without updating this section and the palette-swap design.
   an anchor, center, and the logarithmic slider mapping. Scale is clamped to
   0.01–64.
 - Rendering order: checkerboard, then the reference if below, then artwork,
-  then the reference if above, then the selection. The reference is clipped
+  then the reference if above, then the selection, then the brush outline.
+  The reference is clipped
   to the document rect and drawn with `globalAlpha` and its own smoothing
   setting (on by default for photos). Artwork smoothing stays off.
 - Move mode is a hidden tool (`reference`) toggled from the panel.
@@ -314,6 +322,8 @@ storage without updating this section and the palette-swap design.
   coordinate conversion. Pixel coordinates are always integers.
 - Redraws go through `Editor.requestRender()` (one per animation frame), never
   direct `render()` calls from input handlers.
+- `render(doc, viewport, overlays)` takes what isn't document data as
+  `RenderOverlays`: the reference image and the brush cursor.
 
 ### Tools and input
 
@@ -330,6 +340,7 @@ storage without updating this section and the palette-swap design.
   - The `TOOLS` array order is the toolbar order.
   - Optional:
     - `hidden` keeps a tool out of the strip (activated elsewhere).
+    - `brush` paints with `editor.brush` and shows the brush outline.
     - `continuous` forwards every pointer move.
     - `wheel` takes over the mouse wheel.
     - `ToolInput.exact` has the fractional document position; `x`/`y` are
@@ -339,11 +350,33 @@ storage without updating this section and the palette-swap design.
   `ui/icons.ts`, and put it in `TOOLS`. Keep geometry in `core/`.
 - Painting tools write through `editor.beginStroke(label)` and commit in
   `end` with `editor.endStroke()`:
-  - Freehand tools (pencil, eraser) connect consecutive positions with
-    `plotLine` so fast strokes have no gaps.
+  - Freehand tools (pencil, eraser) drag the brush between consecutive
+    positions with `brushLine` so fast strokes have no gaps.
   - Shape tools (line, rect) call `session.revert()` and redraw on every
     move. The preview lives in the layer, needs no overlay, and the final
     shape is one undo entry.
+- Brushes (`core/brush.ts`): one `Brush` (size 1–64, `round` or
+  `square`) on the editor, shared by every `brush` tool and changed through
+  `Editor.setBrush`. It isn't saved in projects.
+  - `brushMask` builds the footprint once per size and shape (cached), as
+    offsets from the pointer pixel. Odd sizes center on it; even sizes put
+    it right of and below the center, as Aseprite does.
+  - Round brushes include a pixel when its center is within r² − 0.5 of the
+    middle. That gives the usual pixel-art circles: a plus at 3, clipped
+    corners from 4 on.
+  - `brushLine` stamps the full footprint at the first point and only its
+    `edge` pixels after that: a one-pixel step can't reach anything else.
+    This keeps large brushes fast. Tests check it against stamping
+    everywhere.
+  - `brushRect` traces the outline with the brush (four `brushLine`s), and
+    fills inside it when filled. Corners grow with the brush, as with lines.
+  - Canvas input reports the hovered pixel (`Editor.setPointer`) on move,
+    pan, wheel zoom and pointer down, and clears it on leave. The renderer
+    draws the mask's `outline` runs one device pixel outside the footprint,
+    dashed black on white. It is hidden for non-brush tools and over hidden
+    layers.
+  - `[` / `]` call `stepBrushSize`: one step at a time up to 8, then
+    coarser.
 - Fill is 4-connected (`core/floodFill.ts`, iterative). 8-connected fills
   leak through diagonal one-pixel outlines.
 - Eyedropper (`visibleIndexAt`) picks the topmost visible color, not the

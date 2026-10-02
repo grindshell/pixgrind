@@ -1,5 +1,7 @@
+import type { BrushMask } from '../core/brush.ts';
 import { compositeRgba } from '../core/composite.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
+import type { Point } from '../core/raster.ts';
 import type { Rect } from '../core/rect.ts';
 import type { ReferenceImage } from './referenceImage.ts';
 import type { Viewport } from './viewport.ts';
@@ -9,6 +11,17 @@ const CHECKER_LIGHT = '#3a3a44';
 const CHECKER_DARK = '#2e2e37';
 const SELECTION_LIGHT = '#ffffff';
 const SELECTION_DARK = '#000000';
+
+/** The brush footprint at a document pixel (the one under the pointer). */
+export interface BrushCursor extends Point {
+  mask: BrushMask;
+}
+
+/** Things drawn with the artwork that aren't part of the document. */
+export interface RenderOverlays {
+  reference?: ReferenceImage | null;
+  brush?: BrushCursor | null;
+}
 
 /** Draws a document onto a screen canvas: checkerboard backdrop, reference image, layer composite, selection. */
 export class CanvasRenderer {
@@ -44,8 +57,11 @@ export class CanvasRenderer {
     this.canvas.height = Math.max(1, Math.round(cssHeight * dpr));
   }
 
-  /** Draws checkerboard, reference (if below), artwork, reference (if above), then the selection outline. */
-  render(doc: PixelDocument, viewport: Viewport, reference: ReferenceImage | null = null): void {
+  /**
+   * Draws checkerboard, reference (if below), artwork, reference (if above),
+   * the selection outline, then the brush outline.
+   */
+  render(doc: PixelDocument, viewport: Viewport, { reference = null, brush = null }: RenderOverlays = {}): void {
     const { ctx } = this;
     const dpr = this.canvas.width / Math.max(1, this.cssWidth);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -71,6 +87,39 @@ export class CanvasRenderer {
 
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
     if (doc.selection) this.drawSelection(doc.selection, offsetX, offsetY, zoom, dpr);
+    if (brush) this.drawBrush(brush, offsetX, offsetY, zoom, dpr);
+  }
+
+  /**
+   * The brush footprint's border, one device pixel outside it so the pixels
+   * under the brush stay visible. Same dashed black-on-white as the selection.
+   */
+  private drawBrush({ x, y, mask }: BrushCursor, offsetX: number, offsetY: number, zoom: number, dpr: number): void {
+    const { ctx } = this;
+    const deviceX = (docX: number) => Math.round((offsetX + (x + docX) * zoom) * dpr);
+    const deviceY = (docY: number) => Math.round((offsetY + (y + docY) * zoom) * dpr);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.beginPath();
+    for (const run of mask.outline) {
+      // Runs reach one device pixel past each end, so convex corners close.
+      if (run.horizontal) {
+        const lineY = deviceY(run.at) + run.out * 0.5;
+        ctx.moveTo(deviceX(run.from) - 1, lineY);
+        ctx.lineTo(deviceX(run.to) + 1, lineY);
+      } else {
+        const lineX = deviceX(run.at) + run.out * 0.5;
+        ctx.moveTo(lineX, deviceY(run.from) - 1);
+        ctx.lineTo(lineX, deviceY(run.to) + 1);
+      }
+    }
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = SELECTION_LIGHT;
+    ctx.stroke();
+    ctx.setLineDash([2, 2]);
+    ctx.strokeStyle = SELECTION_DARK;
+    ctx.stroke();
+    ctx.restore();
   }
 
   /** The reference, clipped to the document area so it never spills over the stage. */

@@ -1,3 +1,4 @@
+import { stepBrushSize } from '../core/brush.ts';
 import { clearSelection, deselect, nudge, selectAll } from './commands.ts';
 import type { Editor } from './editor.ts';
 import { TOOLS } from './tools.ts';
@@ -63,6 +64,12 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       e.preventDefault();
       const step = e.shiftKey ? BIG_NUDGE : 1;
       nudge(editor, arrow[0] * step, arrow[1] * step);
+      return;
+    }
+
+    if (e.key === '[' || e.key === ']') {
+      e.preventDefault();
+      editor.setBrush({ size: stepBrushSize(editor.brush.size, e.key === ']' ? 1 : -1) });
       return;
     }
 

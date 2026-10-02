@@ -47,7 +47,8 @@ body,
   height: 32px;
 }
 
-.icon-button[aria-pressed='true'].tool-button {
+.icon-button[aria-pressed='true'].tool-button,
+.icon-button[aria-pressed='true'].toggle-button {
   color: var(--text);
   background: var(--bg);
   border-color: var(--accent);

@@ -26,8 +26,16 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
     return { x: Math.floor(exact.x), y: Math.floor(exact.y), exact, shift: e.shiftKey };
   };
 
+  /** Tracks the pixel under the pointer for the brush outline. */
+  const trackPointer = (e: MouseEvent) => {
+    const { x, y } = toolInput(e);
+    editor.setPointer({ x, y });
+  };
+
   canvas.addEventListener('pointerdown', (e) => {
     if (gesture) return;
+    // Pens and touch have no hover, so the first we hear of them is here.
+    trackPointer(e);
 
     if (e.button === BUTTON_MIDDLE) {
       e.preventDefault();
@@ -47,7 +55,10 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
   });
 
   canvas.addEventListener('pointermove', (e) => {
-    if (gesture?.pointerId !== e.pointerId) return;
+    if (gesture?.pointerId !== e.pointerId) {
+      trackPointer(e);
+      return;
+    }
 
     if (gesture.kind === 'pan') {
       editor.viewport = {
@@ -57,11 +68,13 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       };
       gesture.lastClientX = e.clientX;
       gesture.lastClientY = e.clientY;
+      trackPointer(e);
       editor.requestRender();
       return;
     }
 
     const input = toolInput(e);
+    editor.setPointer({ x: input.x, y: input.y });
     const { last } = gesture;
     const samePixel = input.x === last.x && input.y === last.y && input.shift === last.shift;
     if (samePixel && !gesture.tool.continuous) return;
@@ -82,6 +95,11 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
   canvas.addEventListener('pointercancel', endGesture);
   canvas.addEventListener('lostpointercapture', endGesture);
 
+  canvas.addEventListener('pointerleave', () => {
+    // Keep the brush outline while a captured gesture continues off the canvas.
+    if (!gesture) editor.setPointer(null);
+  });
+
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   canvas.addEventListener(
@@ -98,6 +116,7 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       const rect = canvas.getBoundingClientRect();
       const zoom = stepZoom(editor.viewport.zoom, direction);
       editor.viewport = zoomAt(editor.viewport, zoom, e.clientX - rect.left, e.clientY - rect.top);
+      trackPointer(e);
       editor.requestRender();
     },
     { passive: false },

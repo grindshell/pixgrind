@@ -1,9 +1,10 @@
+import { brushLine, brushMask, brushRect, type BrushMask } from '../core/brush.ts';
 import { visibleIndexAt } from '../core/composite.ts';
 import { combineEdits, type PixelEditSession } from '../core/edits.ts';
 import { floodRegion } from '../core/floodFill.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { documentRect } from '../core/pixelDocument.ts';
-import { plotLine, plotRect, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
+import { snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { clipRect, rectFromCorners, translateRect } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
 import { movedPixels, selectionChange } from '../core/selection.ts';
@@ -46,6 +47,8 @@ export interface Tool {
   hidden?: boolean;
   /** Whether the tool writes pixels. Painting tools are blocked on hidden layers. */
   paints: boolean;
+  /** Draws with the editor's brush (size and shape); the canvas shows its outline under the pointer. */
+  brush?: boolean;
   /** Receive every pointer move, not just moves to a new pixel. */
   continuous?: boolean;
   /**
@@ -60,12 +63,13 @@ export interface Tool {
 /** Freehand drawing; consecutive pointer positions are joined with lines so fast strokes have no gaps. */
 function freehand(editor: Editor, start: ToolInput, index: number, label: string): ToolGesture {
   const session = editor.beginStroke(label);
+  const mask = brushMask(editor.brush);
   let last: Point = start;
-  paintLine(session, start, start, index);
+  paintLine(session, mask, start, start, index);
   editor.requestRender();
   return {
     move(input) {
-      if (paintLine(session, last, input, index)) editor.requestRender();
+      if (paintLine(session, mask, last, input, index)) editor.requestRender();
       last = input;
     },
     end: () => editor.endStroke(),
@@ -89,9 +93,10 @@ function shape(
   return { move: redraw, end: () => editor.endStroke() };
 }
 
-function paintLine(session: PixelEditSession, from: Point, to: Point, index: number): boolean {
+/** Drags the brush from `from` to `to`. Returns whether any pixel changed. */
+function paintLine(session: PixelEditSession, mask: BrushMask, from: Point, to: Point, index: number): boolean {
   let changed = false;
-  plotLine(from.x, from.y, to.x, to.y, (x, y) => {
+  brushLine(mask, from.x, from.y, to.x, to.y, (x, y) => {
     changed = session.setPixel(x, y, index) || changed;
   });
   return changed;
@@ -103,6 +108,7 @@ const pencil: Tool = {
   icon: 'pencil',
   shortcut: 'b',
   paints: true,
+  brush: true,
   begin: (editor, input, index) => freehand(editor, input, index, index === TRANSPARENT ? 'Eraser' : 'Pencil'),
 };
 
@@ -112,6 +118,7 @@ const eraser: Tool = {
   icon: 'eraser',
   shortcut: 'e',
   paints: true,
+  brush: true,
   begin: (editor, input) => freehand(editor, input, TRANSPARENT, 'Eraser'),
 };
 
@@ -121,11 +128,14 @@ const line: Tool = {
   icon: 'line',
   shortcut: 'l',
   paints: true,
-  begin: (editor, start, index) =>
-    shape(editor, start, 'Line', (session, input) => {
+  brush: true,
+  begin(editor, start, index) {
+    const mask = brushMask(editor.brush);
+    return shape(editor, start, 'Line', (session, input) => {
       const end = input.shift ? snapLineEnd(start, input) : input;
-      paintLine(session, start, end, index);
-    }),
+      paintLine(session, mask, start, end, index);
+    });
+  },
 };
 
 function rectangle(filled: boolean): Tool {
@@ -135,11 +145,14 @@ function rectangle(filled: boolean): Tool {
     icon: filled ? 'rectFilled' : 'rect',
     shortcut: filled ? 'R' : 'r',
     paints: true,
-    begin: (editor, start, index) =>
-      shape(editor, start, 'Rectangle', (session, input) => {
+    brush: true,
+    begin(editor, start, index) {
+      const mask = brushMask(editor.brush);
+      return shape(editor, start, 'Rectangle', (session, input) => {
         const end = input.shift ? squareEnd(start, input) : input;
-        plotRect(start.x, start.y, end.x, end.y, filled, (x, y) => session.setPixel(x, y, index));
-      }),
+        brushRect(mask, start.x, start.y, end.x, end.y, filled, (x, y) => session.setPixel(x, y, index));
+      });
+    },
   };
 }
 
