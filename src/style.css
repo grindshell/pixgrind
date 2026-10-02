@@ -210,7 +210,8 @@ body,
 }
 
 .panel-note[hidden],
-.field-row[hidden] {
+.field-row[hidden],
+.checkbox[hidden] {
   display: none;
 }
 
@@ -231,6 +232,7 @@ body,
   gap: 5px;
   font-size: 12px;
   color: var(--text);
+  white-space: nowrap;
   cursor: pointer;
 }
 

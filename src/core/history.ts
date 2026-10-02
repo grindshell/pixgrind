@@ -8,6 +8,11 @@ export class History {
   private readonly undoStack: Edit[] = [];
   private readonly redoStack: Edit[] = [];
   private readonly limit: number;
+  /**
+   * Stands for the state with nothing left to undo. Replaced whenever that
+   * state changes (the oldest edit is dropped, or history is cleared).
+   */
+  private base: object = {};
 
   constructor(limit = DEFAULT_HISTORY_LIMIT) {
     if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`Invalid history limit ${limit}`);
@@ -19,6 +24,15 @@ export class History {
     return this.undoStack.at(-1);
   }
 
+  /**
+   * Identifies the document state reached through history: the same value
+   * means the same state, even after undoing and redoing back to it. Compare
+   * against a saved position to tell whether there are unsaved changes.
+   */
+  get position(): object {
+    return this.undoStack.at(-1) ?? this.base;
+  }
+
   /** The edit `redo()` would reapply. */
   get nextRedo(): Edit | undefined {
     return this.redoStack.at(-1);
@@ -27,7 +41,10 @@ export class History {
   /** Records an edit that has already been applied to the document. Clears the redo stack. */
   push(edit: Edit): void {
     this.undoStack.push(edit);
-    if (this.undoStack.length > this.limit) this.undoStack.shift();
+    if (this.undoStack.length > this.limit) {
+      this.undoStack.shift();
+      this.base = {};
+    }
     this.redoStack.length = 0;
   }
 
@@ -44,6 +61,7 @@ export class History {
   clear(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    this.base = {};
   }
 
   private move(doc: PixelDocument, from: Edit[], to: Edit[], direction: EditDirection): Edit | null {

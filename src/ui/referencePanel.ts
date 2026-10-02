@@ -6,8 +6,9 @@ import {
   sliderToScale,
 } from '../core/referencePlacement.ts';
 import { chooseFile, fileBaseName } from '../io/files.ts';
+import type { ProjectReference } from '../io/projectFile.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
-import { el, fieldRow, textButton } from './dom.ts';
+import { checkbox, el, fieldRow, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
 import type { ToolId } from './tools.ts';
 
@@ -21,12 +22,7 @@ const SCALE_STEPS = 1000;
  * under the artwork at half opacity. Replaces any current reference.
  */
 export async function loadReferenceFile(editor: Editor, file: Blob & { name?: string }): Promise<string> {
-  let bitmap: ImageBitmap;
-  try {
-    bitmap = await createImageBitmap(file);
-  } catch {
-    throw new Error('The file is not an image this browser can read');
-  }
+  const bitmap = await decodeReference(file);
   const name = file.name ? fileBaseName(file.name) : 'Reference';
   const reference: ReferenceImage = {
     name,
@@ -42,6 +38,20 @@ export async function loadReferenceFile(editor: Editor, file: Blob & { name?: st
   };
   editor.setReference(reference);
   return `Loaded ${file.name ?? 'reference'} (${bitmap.width}×${bitmap.height}).`;
+}
+
+/** Decodes a reference saved in a project, keeping its saved placement and settings. */
+export async function referenceFromProject(saved: ProjectReference): Promise<ReferenceImage> {
+  const bitmap = await decodeReference(saved.source);
+  return { ...saved, bitmap, width: bitmap.width, height: bitmap.height };
+}
+
+async function decodeReference(file: Blob): Promise<ImageBitmap> {
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    throw new Error('The file is not an image this browser can read');
+  }
 }
 
 /**
@@ -156,15 +166,6 @@ export function createReferencePanel(editor: Editor): HTMLElement {
 function formatScale(scale: number): string {
   const percent = scale * 100;
   return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
-}
-
-function checkbox(text: string, onChange: (checked: boolean) => void): { label: HTMLLabelElement; input: HTMLInputElement } {
-  const label = el('label', 'checkbox');
-  const input = el('input');
-  input.type = 'checkbox';
-  input.addEventListener('change', () => onChange(input.checked));
-  label.append(input, text);
-  return { label, input };
 }
 
 /** A labeled range input with a value readout. `set` leaves the value alone while the user is dragging it. */

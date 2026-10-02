@@ -23,7 +23,12 @@ export function openImageEdit(doc: PixelDocument, image: RgbaImage, name: string
     indexed && indexed.colors.length > 0 ? createPalette(name, indexed.colors) : clonePalette(doc.palette);
   const next = createDocument(image.width, image.height, palette, name);
   next.layers[0].pixels.set(indexed ? indexed.pixels : indexImageToPalette(image.data, doc.palette));
-  return { kind: 'document', label: 'Open image', before: documentState(doc), after: documentState(next) };
+  return replaceDocumentEdit(doc, next, 'Open image');
+}
+
+/** Replaces `doc` with the contents of `next` (e.g. an opened project). Undoable like any edit. */
+export function replaceDocumentEdit(doc: PixelDocument, next: PixelDocument, label: string): DocumentEdit {
+  return { kind: 'document', label, before: documentState(doc), after: documentState(next) };
 }
 
 /**

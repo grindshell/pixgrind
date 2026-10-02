@@ -51,8 +51,13 @@ Built so far:
   - Import/export `.hex`, `.gpl`, `.pal` and PNG swatches.
 - All palette changes are undoable; the library itself is not.
 - File panel:
-  - Open an image as the document (undoable; also by dropping it on the
-    canvas), using either the image's own colors or the current palette.
+  - Open (Ctrl+O, or drop on the canvas) a `.pixgrind` project or an image
+    as the document. Undoable. Images use either their own colors or the
+    current palette.
+  - Save (Ctrl+S) downloads a `.pixgrind` project, optionally with the
+    reference image embedded.
+  - Unsaved changes show as `•` in the window title, and production builds
+    ask before closing the tab.
   - Add an image as a layer.
   - Export PNG/JPEG/WebP at 1–16×.
 - Reference panel: load an image of any size as a tracing guide, fitted to
@@ -67,9 +72,11 @@ Built so far:
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 
-Not built yet: project files (save/load `.pixgrind`, including the
-reference image).
 Follow-ups:
+- Files:
+  - Save in place with the File System Access API where available (today
+    every save is a new download).
+  - Autosave/crash recovery (e.g. IndexedDB).
 - Layers panel: drag-and-drop reordering, keyboard shortcuts for layer
   actions.
 - Tools: a choosable secondary color (the right button is fixed to
@@ -148,14 +155,16 @@ src/
                  constructors), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer,
                  ReferenceImage type
-  io/            import/export and persistence: paletteFormats (pure text
-                 parsers/serializers), paletteLibrary (saved palettes over a
-                 storage interface), imageCodec (decode/encode via canvas),
-                 paletteImage (PNG swatches), files (download, file picker,
-                 file names)
+  io/            import/export and persistence: projectFile (.pixgrind
+                 serialize/parse), bytes (base64, zlib), paletteFormats (pure
+                 text parsers/serializers), paletteLibrary (saved palettes
+                 over a storage interface), imageCodec (decode/encode via
+                 canvas), paletteImage (PNG swatches), files (download, file
+                 picker, file names and sizes)
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
-                 fileCommands (open/add/export image), keyboard shortcuts,
+                 fileCommands (open/save project, open/add/export image),
+                 keyboard shortcuts,
                  history controls, file panel, palette and palettes (library)
                  panels, layers panel, reference panel (+ loadReferenceFile),
                  DOM helpers (dom.ts) and inline SVG
@@ -168,7 +177,8 @@ public/          static assets served as-is (favicon.svg)
   is also pure and tested.
 - In `io/`, keep format parsing/serializing pure (string or bytes in, data
   out) and in separate modules from the DOM parts (file pickers, canvas
-  encode/decode), so formats are unit-tested in Node. Persistence takes its
+  encode/decode), so formats are unit-tested in Node. `Blob`, `btoa`/`atob`
+  and compression streams are fine there: Node has them too. Persistence takes its
   storage as a parameter (`KeyValueStorage`) for the same reason.
 - Dependency direction: `ui` → `render` / `io` → `core`.
 - Tests live next to the code as `*.test.ts` and import from `vitest`
@@ -391,7 +401,9 @@ storage without updating this section and the palette-swap design.
   `Editor.previewLayerOpacity`, then commit one edit on release with an
   explicit `before` value (`layerPropsEdit(doc, id, after, before)`).
 - Editor entry points:
-  - `perform(edit)` applies an unapplied edit and records it.
+  - `perform(edit)` applies an unapplied edit and records it. It returns
+    false when it did nothing (null edit, or busy); async commands check
+    this rather than reporting success.
   - `record(edit)` records one whose changes are already applied, e.g.
     after a preview or a stroke.
   - `takeStroke()` ends a stroke without recording it, so a tool can
@@ -402,6 +414,11 @@ storage without updating this section and the palette-swap design.
 - `core/history.ts` `History` holds the undo/redo stacks (default limit 256).
   `push` takes an edit that is already applied and clears redo. If
   `applyEdit` throws, the stacks are left unchanged.
+- `History.position` is an opaque token for the current state: undoing or
+  redoing back to a state gives the same token. The empty-stack token is
+  replaced when old edits are dropped or history is cleared, since that
+  state is then no longer the original one. The editor compares it with the
+  position saved by `markSaved` to compute `Editor.dirty`.
 - In the UI, pixel writes go through `editor.beginStroke(label)`, which
   returns a `PixelEditSession`, then `editor.endStroke()`, which commits it.
   Never call `setPixel` on document layers directly from UI code: the change
@@ -446,14 +463,44 @@ storage without updating this section and the palette-swap design.
 - Not built yet: export of the selection only, a "new document / canvas size"
   dialog, GIF/animated formats.
 
-### Project files (planned)
+### Project files
 
-- `.pixgrind` JSON with a `version` field, name, dimensions, palette, and
-  layers (pixel data base64-encoded). Optionally embed the reference image:
-  its `source` Blob (base64) plus placement and settings. Re-decode it on
-  load.
-  Bump `version` and add a migration when the schema changes. Selection is
-  not saved.
+- `.pixgrind` is pretty-printed JSON (`io/projectFile.ts`):
+  - `format: "pixgrind"` and an integer `version`, then name, width,
+    height and the palette (hex strings).
+  - Layers bottom to top: name, visible, opacity, and `pixels`, which is
+    base64 of the zlib-compressed (`CompressionStream('deflate')`) palette
+    indices, row-major.
+  - An optional `reference`: the original image file (base64) with its MIME
+    type, placement and settings. It's re-decoded on load.
+- Not saved: the selection, history, view, active layer, tool or primary
+  color. Layer ids are regenerated on load.
+- `PROJECT_VERSION` is 1. When the schema changes, bump it and keep reading
+  every older version by migrating its JSON to the current shape before
+  reading. A newer version than this build knows is refused with a clear
+  message, never half-read.
+- `parseProject` validates everything and throws user-readable errors
+  naming the field (e.g. "layer 2 opacity must be between 0 and 1").
+  Inflation is capped at the layer's size so a small file can't expand
+  without limit.
+- `serializeProject` copies the document synchronously before its first
+  await, so edits made during compression don't leak into the file.
+- Opening a project replaces the document with a `document` edit
+  (`replaceDocumentEdit`, undoable) and marks it saved. The reference is
+  decoded first, and if the project has one it replaces the current
+  reference. Otherwise the current one stays, as when opening an image.
+  The reference isn't undoable, so undoing the open keeps it.
+- Saving downloads `<name>.pixgrind`. The File panel's "with reference"
+  checkbox (shown only when a reference is loaded) controls embedding.
+- Dirty tracking: `Editor.dirty` is true when the history position differs
+  from the saved one, or when layer visibility changed since saving
+  (visibility is saved but isn't in history). Reference changes don't
+  count. The title shows `•` when dirty. `main.ts` adds a `beforeunload`
+  guard in production builds only, because Vite's full reloads after every
+  source edit would trigger it in dev.
+- Ctrl+O / Ctrl+S are handled even in text fields (overriding the browser's
+  open/save page). The File panel owns them (`FilePanel.open`/`save`) so
+  results show in its status line.
 
 ## Verifying in the browser
 
@@ -491,6 +538,12 @@ storage without updating this section and the palette-swap design.
     a `DataTransfer` holding a `File` (build one with `encodeImage`), or call
     `openImageFile` / `addImageLayer` directly.
   - Text formats are covered by unit tests.
+  - Test Save/Ctrl+S end to end by temporarily replacing
+    `HTMLAnchorElement.prototype.click` with a recorder, then `fetch` the
+    recorded blob URL to read the file. Restore it afterwards. Likewise
+    stub `HTMLInputElement.prototype.click` to check that Ctrl+O opens a
+    picker. Test opening projects by dropping a `File` named `*.pixgrind`
+    on `.stage`.
   - Remove any test data saved to `localStorage` afterwards.
 - While the pane is hidden, `editor.renderer.viewSize` can stay 0×0 because
   ResizeObserver never fires, so `fitToView` does nothing. Call

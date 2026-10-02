@@ -98,6 +98,43 @@ describe('History', () => {
     expect(history.nextRedo).toBeUndefined();
   });
 
+  it('reports the same position when undo/redo returns to a state', () => {
+    const doc = createDocument(4, 1, palette);
+    const history = new History();
+    const start = history.position;
+    history.push(paint(doc, 0, 1));
+    const saved = history.position;
+    expect(saved).not.toBe(start);
+    history.push(paint(doc, 1, 1));
+    expect(history.position).not.toBe(saved);
+    history.undo(doc);
+    expect(history.position).toBe(saved);
+    history.undo(doc);
+    expect(history.position).toBe(start);
+    history.redo(doc);
+    expect(history.position).toBe(saved);
+    // A different edit from the same state is a different position.
+    history.undo(doc);
+    history.push(paint(doc, 2, 1));
+    expect(history.position).not.toBe(saved);
+  });
+
+  it('never reports the starting position once older edits were dropped', () => {
+    const doc = createDocument(4, 1, palette);
+    const history = new History(1);
+    const start = history.position;
+    history.push(paint(doc, 0, 1));
+    history.push(paint(doc, 1, 1));
+    history.undo(doc);
+    // Nothing left to undo, but the first edit is still applied.
+    expect(history.nextUndo).toBeUndefined();
+    expect(history.position).not.toBe(start);
+
+    const beforeClear = history.position;
+    history.clear();
+    expect(history.position).not.toBe(beforeClear);
+  });
+
   it('rejects invalid limits', () => {
     expect(() => new History(0)).toThrow(RangeError);
     expect(() => new History(1.5)).toThrow(RangeError);

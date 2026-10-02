@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { importImageLayerEdit, openImageEdit } from './documentEdits.ts';
+import { importImageLayerEdit, openImageEdit, replaceDocumentEdit } from './documentEdits.ts';
 import { applyEdit, documentState, type DocumentEdit } from './edits.ts';
 import { History } from './history.ts';
 import type { RgbaImage } from './image.ts';
@@ -84,6 +84,23 @@ describe('openImageEdit', () => {
     edit.after.width = 5;
     expect(() => applyEdit(doc, edit, 'redo')).toThrow(/layer size/);
     expect(doc.name).toBe('Old');
+  });
+});
+
+describe('replaceDocumentEdit', () => {
+  it('swaps in another document and back', () => {
+    const doc = existingDoc();
+    const before = documentState(doc);
+    const next = createDocument(2, 3, createPalette('Other', [0x123456ff]), 'project');
+    next.layers.push(createLayer(2, 3, 'Second'));
+    const edit = replaceDocumentEdit(doc, next, 'Open project');
+    expect(edit.label).toBe('Open project');
+
+    applyEdit(doc, edit, 'redo');
+    expect([doc.name, doc.width, doc.height, doc.palette.name]).toEqual(['project', 2, 3, 'Other']);
+    expect(doc.layers).toEqual(next.layers);
+    applyEdit(doc, edit, 'undo');
+    expect(documentState(doc)).toEqual(before);
   });
 });
 

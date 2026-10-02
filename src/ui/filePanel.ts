@@ -2,19 +2,29 @@ import { parseHex } from '../core/color.ts';
 import type { ImageColorMode } from '../core/documentEdits.ts';
 import { chooseFile } from '../io/files.ts';
 import { IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
-import { el, fieldRow, option, textButton } from './dom.ts';
+import { isProjectFile, PROJECT_EXTENSION } from '../io/projectFile.ts';
+import { checkbox, el, fieldRow, option, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
-import { addImageLayer, exportImage, openImageFile } from './fileCommands.ts';
+import { addImageLayer, exportImage, openFile, saveProject } from './fileCommands.ts';
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/bmp';
+const OPEN_ACCEPT = `.${PROJECT_EXTENSION},${IMAGE_ACCEPT}`;
 const SCALES = [1, 2, 4, 8, 16];
 const DEFAULT_JPEG_BACKGROUND = '#ffffff';
 
+export interface FilePanel {
+  element: HTMLElement;
+  /** Picks a project or image to open (Ctrl+O). */
+  open(): void;
+  /** Saves the project (Ctrl+S). */
+  save(): void;
+}
+
 /**
- * Open an image as the document, add one as a layer, and export the visible
- * layers. Images dropped on `dropTarget` are opened too.
+ * Open a project or an image, add an image as a layer, save the project, and
+ * export the visible layers. Files dropped on `dropTarget` are opened too.
  */
-export function createFilePanel(editor: Editor, dropTarget: HTMLElement): HTMLElement {
+export function createFilePanel(editor: Editor, dropTarget: HTMLElement): FilePanel {
   const panel = el('section', 'panel');
   const heading = el('h2', 'panel-title');
   heading.textContent = 'File';
@@ -31,17 +41,27 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): HTMLEl
   colorMode.setAttribute('aria-label', 'Colors when opening an image');
   colorMode.append(option('image', "Use the image's colors"), option('palette', 'Match current palette'));
   colorMode.title =
-    "Use the image's colors: exact, up to 255 colors.\nMatch current palette: each pixel takes the nearest palette color.";
+    "How an opened image becomes indexed colors.\nUse the image's colors: exact, up to 255 colors.\nMatch current palette: each pixel takes the nearest palette color.";
   const openMode = () => colorMode.value as ImageColorMode;
 
-  const openButton = textButton('Open…', () => {
-    void chooseFile(IMAGE_ACCEPT).then((file) => file && run(openImageFile(editor, file, openMode())));
-  });
-  openButton.title = 'Open an image as the document (undoable). You can also drop an image on the canvas.';
+  const open = () => {
+    void chooseFile(OPEN_ACCEPT).then((file) => file && run(openFile(editor, file, openMode())));
+  };
+  const openButton = textButton('Open…', open);
+  openButton.title = 'Open a Pixgrind project or an image (Ctrl+O). You can also drop one on the canvas.';
   const layerButton = textButton('Add as layer…', () => {
     void chooseFile(IMAGE_ACCEPT).then((file) => file && run(addImageLayer(editor, file)));
   });
   layerButton.title = 'Add an image as a new layer, using the nearest palette colors';
+
+  const includeReference = checkbox('with reference', () => {});
+  includeReference.input.checked = true;
+  includeReference.label.title = "Embed the reference image in the project. Turn off to keep a large photo out of the file.";
+  const save = () => {
+    void run(saveProject(editor, { includeReference: includeReference.input.checked }));
+  };
+  const saveButton = textButton('Save', save);
+  saveButton.title = `Download a .${PROJECT_EXTENSION} file with all layers and the palette (Ctrl+S)`;
 
   const format = el('select', 'select');
   format.setAttribute('aria-label', 'Export format');
@@ -58,6 +78,7 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): HTMLEl
       }),
     );
   });
+  exportButton.title = 'Download the visible layers as an image';
 
   const background = el('input', 'color-picker');
   background.type = 'color';
@@ -77,22 +98,30 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): HTMLEl
   format.addEventListener('change', syncFormat);
   syncFormat();
 
-  attachImageDrop(dropTarget, (file) => void run(openImageFile(editor, file, openMode())));
+  // The reference option only matters when there is a reference.
+  const syncReference = () => {
+    includeReference.label.hidden = !editor.reference;
+  };
+  editor.onChange(syncReference);
+  syncReference();
+
+  attachFileDrop(dropTarget, (file) => void run(openFile(editor, file, openMode())));
 
   panel.append(
     heading,
     fieldRow(openButton, layerButton),
     colorMode,
+    fieldRow(saveButton, includeReference.label),
     fieldRow(format, scale, exportButton),
     jpegRow,
     jpegNote,
     status,
   );
-  return panel;
+  return { element: panel, open, save };
 }
 
-/** Calls `onDrop` with the first image file dropped on `target`, highlighting it while dragging. */
-function attachImageDrop(target: HTMLElement, onDrop: (file: File) => void): void {
+/** Calls `onDrop` with the first project or image file dropped on `target`, highlighting it while dragging. */
+function attachFileDrop(target: HTMLElement, onDrop: (file: File) => void): void {
   const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false;
   target.addEventListener('dragover', (e) => {
     if (!hasFiles(e)) return;
@@ -110,7 +139,7 @@ function attachImageDrop(target: HTMLElement, onDrop: (file: File) => void): voi
     target.classList.remove('is-drop-target');
     if (!hasFiles(e)) return;
     e.preventDefault();
-    const file = [...(e.dataTransfer?.files ?? [])].find((f) => f.type.startsWith('image/'));
+    const file = [...(e.dataTransfer?.files ?? [])].find((f) => isProjectFile(f) || f.type.startsWith('image/'));
     if (file) onDrop(file);
   });
 }

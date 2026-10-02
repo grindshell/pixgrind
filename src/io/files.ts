@@ -26,6 +26,13 @@ export function fileBaseName(fileName: string): string {
   return fileName.replace(/\.[^./\\]+$/, '') || fileName;
 }
 
+/** 1536 → "1.5 KB". */
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const [value, unit] = bytes < 1024 * 1024 ? [bytes / 1024, 'KB'] : [bytes / (1024 * 1024), 'MB'];
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${unit}`;
+}
+
 /** A name safe to use as a download file name. */
 export function safeFileName(name: string, fallback = 'untitled'): string {
   return name.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').trim() || fallback;

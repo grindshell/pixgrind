@@ -31,6 +31,16 @@ export function fieldRow(...children: HTMLElement[]): HTMLDivElement {
   return row;
 }
 
+/** A labeled checkbox. */
+export function checkbox(text: string, onChange: (checked: boolean) => void): { label: HTMLLabelElement; input: HTMLInputElement } {
+  const label = el('label', 'checkbox');
+  const input = el('input');
+  input.type = 'checkbox';
+  input.addEventListener('change', () => onChange(input.checked));
+  label.append(input, text);
+  return { label, input };
+}
+
 export function option(value: string, label: string): HTMLOptionElement {
   const opt = el('option');
   opt.value = value;

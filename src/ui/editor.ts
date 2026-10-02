@@ -41,6 +41,10 @@ export class Editor {
   private gestureActive = false;
   /** Document size the viewport was last fitted to. */
   private fittedSize: { width: number; height: number };
+  /** History position when the document was last saved or opened as a project. */
+  private savedPosition: object;
+  /** Layer visibility is saved in projects but changes outside history, so it's tracked separately. */
+  private visibilityChanged = false;
   private renderQueued = false;
   private readonly listeners = new Set<() => void>();
 
@@ -49,6 +53,23 @@ export class Editor {
     this.renderer = new CanvasRenderer(canvas);
     this.activeLayerId = doc.layers[0].id;
     this.fittedSize = { width: doc.width, height: doc.height };
+    this.savedPosition = this.history.position;
+  }
+
+  /**
+   * Whether the document has changes since it was last saved (or since it was
+   * opened from a project). Undoing back to the saved state makes it clean
+   * again. The reference image doesn't count: it's a guide, not artwork.
+   */
+  get dirty(): boolean {
+    return this.visibilityChanged || this.history.position !== this.savedPosition;
+  }
+
+  /** Marks the document saved as of `position` (default: now), e.g. after saving a project. */
+  markSaved(position: object = this.history.position): void {
+    this.savedPosition = position;
+    this.visibilityChanged = false;
+    this.notify();
   }
 
   get activeLayer(): Layer {
@@ -101,13 +122,15 @@ export class Editor {
 
   /**
    * Applies an edit and records it in history. No-op for null (constructors
-   * return null for "no change") and while a gesture is in progress.
+   * return null for "no change") and while a gesture is in progress. Returns
+   * whether the edit was applied.
    */
-  perform(edit: Edit | null): void {
-    if (!edit || this.busy) return;
+  perform(edit: Edit | null): boolean {
+    if (!edit || this.busy) return false;
     applyEdit(this.doc, edit, 'redo');
     this.history.push(edit);
     this.documentChanged();
+    return true;
   }
 
   /**
@@ -118,6 +141,7 @@ export class Editor {
     const layer = findLayer(this.doc, layerId);
     if (!layer || layer.visible === visible) return;
     layer.visible = visible;
+    this.visibilityChanged = true;
     this.requestRender();
     this.notify();
   }
@@ -265,11 +289,12 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   title.textContent = 'Pixgrind';
 
   const editor = new Editor(doc, canvas);
+  const filePanel = createFilePanel(editor, stage);
   stage.append(canvas);
   sidebar.append(
     title,
     createHistoryControls(editor),
-    createFilePanel(editor, stage),
+    filePanel.element,
     createPalettePanel(editor),
     createPaletteLibraryPanel(editor, openPaletteLibrary()),
     createReferencePanel(editor),
@@ -278,7 +303,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   layout.append(sidebar, createToolbar(editor), stage);
   root.append(layout);
   attachCanvasInput(canvas, editor);
-  attachShortcuts(window, editor);
+  attachShortcuts(window, editor, filePanel);
 
   // Hidden layers can't be painted on; show that with the cursor. The tool id
   // lets CSS pick a cursor per tool.
@@ -290,7 +315,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   syncStageLock();
 
   const syncTitle = () => {
-    document.title = `${doc.name} · Pixgrind`;
+    document.title = `${editor.dirty ? '• ' : ''}${doc.name} · Pixgrind`;
   };
   editor.onChange(syncTitle);
   syncTitle();
