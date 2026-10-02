@@ -18,6 +18,8 @@ export interface FilePanel {
   open(): void;
   /** Saves the project (Ctrl+S). */
   save(): void;
+  /** Shows a message in the panel's status line (e.g. from the clipboard). */
+  report(message: string): void;
 }
 
 /**
@@ -117,7 +119,7 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): FilePa
     jpegNote,
     status,
   );
-  return { element: panel, open, save };
+  return { element: panel, open, save, report: (message) => (status.textContent = message) };
 }
 
 /** Calls `onDrop` with the first project or image file dropped on `target`, highlighting it while dragging. */

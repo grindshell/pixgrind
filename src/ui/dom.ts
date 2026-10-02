@@ -71,6 +71,11 @@ export function option(value: string, label: string): HTMLOptionElement {
   return opt;
 }
 
+/** Whether an event target edits text, so keyboard shortcuts and clipboard commands should leave it alone. */
+export function isTextEntry(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'));
+}
+
 export function setButtonLabel(button: HTMLButtonElement, label: string): void {
   button.title = label;
   button.setAttribute('aria-label', label);

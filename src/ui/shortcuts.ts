@@ -1,5 +1,6 @@
 import { stepBrushSize } from '../core/brush.ts';
 import { clearSelection, deselect, dropFloating, nudge, selectAll } from './commands.ts';
+import { isTextEntry } from './dom.ts';
 import type { Editor } from './editor.ts';
 import { TOOLS } from './tools.ts';
 
@@ -92,9 +93,4 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       editor.setTool(tool.id);
     }
   });
-}
-
-/** Text fields keep their own keys. */
-function isTextEntry(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'));
 }

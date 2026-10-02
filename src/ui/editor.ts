@@ -20,6 +20,7 @@ import { CanvasRenderer, type BrushCursor } from '../render/canvasRenderer.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
+import { attachClipboard } from './clipboard.ts';
 import { el } from './dom.ts';
 import { createFilePanel } from './filePanel.ts';
 import { createHistoryControls } from './historyControls.ts';
@@ -406,6 +407,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   root.append(layout);
   attachCanvasInput(canvas, editor);
   attachShortcuts(window, editor, filePanel);
+  attachClipboard(document, editor, filePanel.report);
 
   // Hidden layers can't be painted on; show that with the cursor. The tool id
   // lets CSS pick a cursor per tool.

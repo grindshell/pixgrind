@@ -62,15 +62,21 @@ export function moveEdit(doc: PixelDocument, layer: Layer, dx: number, dy: numbe
  * moving and deleting do.
  */
 
-/** Lifts the selected pixels of `layer` into a float at the same place. Null without a selection. */
-export function liftSelection(doc: PixelDocument, layer: Layer): FloatingPixels | null {
-  const rect = doc.selection;
-  if (!rect) return null;
+/** A copy of `layer`'s pixels in `rect`, which must be inside the document, row-major. */
+export function layerPixelsIn(doc: PixelDocument, layer: Layer, rect: Rect): Uint8Array {
   const pixels = new Uint8Array(rect.width * rect.height);
   for (let j = 0; j < rect.height; j++) {
     const start = (rect.y + j) * doc.width + rect.x;
     pixels.set(layer.pixels.subarray(start, start + rect.width), j * rect.width);
   }
+  return pixels;
+}
+
+/** Lifts the selected pixels of `layer` into a float at the same place. Null without a selection. */
+export function liftSelection(doc: PixelDocument, layer: Layer): FloatingPixels | null {
+  const rect = doc.selection;
+  if (!rect) return null;
+  const pixels = layerPixelsIn(doc, layer, rect);
   // Under each lifted pixel is the hole it leaves: transparent, Uint8Array's default.
   return { layerId: layer.id, rect, pixels, under: new Uint8Array(pixels.length) };
 }
@@ -90,12 +96,49 @@ export function moveFloating(
 ): { values: Map<number, number>; moved: FloatingPixels } {
   const values = unstampedValues(doc, floating);
   const rect = translateRect(floating.rect, dx, dy);
-  const under = new Uint8Array(floating.pixels.length);
-  forEachStamped(doc, floating.pixels, rect, (i, offset) => {
-    under[i] = values.get(offset) ?? layer.pixels[offset];
-    values.set(offset, floating.pixels[i]);
-  });
+  const under = stampValues(doc, layer, floating.pixels, rect, values);
   return { values, moved: { ...floating, rect, under } };
+}
+
+/**
+ * Puts new pixels down as a float on `layer` at `rect` (which may extend
+ * past the document), replacing any current float. Pasting does this.
+ */
+export function placeFloatingEdit(
+  doc: PixelDocument,
+  layer: Layer,
+  pixels: Uint8Array,
+  rect: Rect,
+  label: string,
+): Edit | null {
+  const values = new Map<number, number>();
+  const under = stampValues(doc, layer, pixels, rect, values);
+  const floating: FloatingPixels = { layerId: layer.id, rect, pixels, under };
+  return combineEdits(label, [
+    pixelEditFromValues(layer, label, values),
+    floatingChange(doc.floating, floating, label),
+    selectionChange(doc.selection, clipRect(rect, doc.width, doc.height), label),
+  ]);
+}
+
+/**
+ * Adds to `values` the stamping of `pixels` at `rect` (non-transparent
+ * pixels inside the document), reading the layer through `values`. Returns
+ * what each stamped pixel covers.
+ */
+function stampValues(
+  doc: PixelDocument,
+  layer: Layer,
+  pixels: Uint8Array,
+  rect: Rect,
+  values: Map<number, number>,
+): Uint8Array {
+  const under = new Uint8Array(pixels.length);
+  forEachStamped(doc, pixels, rect, (i, offset) => {
+    under[i] = values.get(offset) ?? layer.pixels[offset];
+    values.set(offset, pixels[i]);
+  });
+  return under;
 }
 
 /**
@@ -161,11 +204,14 @@ function forEachStamped(
 
 /** Clears the selected pixels of `layer` to transparent. Null when nothing is selected or nothing changes. */
 export function clearSelectionEdit(doc: PixelDocument, layer: Layer): PixelEdit | null {
-  const area = doc.selection;
-  if (!area) return null;
+  return doc.selection && clearAreaEdit(doc, layer, doc.selection, 'Clear');
+}
+
+/** Clears `layer`'s pixels in `area` (inside the document) to transparent. Null when nothing changes. */
+export function clearAreaEdit(doc: PixelDocument, layer: Layer, area: Rect, label: string): PixelEdit | null {
   const values = new Map<number, number>();
   for (let y = area.y; y < area.y + area.height; y++) {
     for (let x = area.x; x < area.x + area.width; x++) values.set(y * doc.width + x, TRANSPARENT);
   }
-  return pixelEditFromValues(layer, 'Clear', values);
+  return pixelEditFromValues(layer, label, values);
 }

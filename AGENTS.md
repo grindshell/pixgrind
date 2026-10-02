@@ -52,6 +52,13 @@ Built so far:
       under them. Without a float it clears the selected pixels.
   - Painting and fill are clipped to the selection.
   - Selection changes, moves and drops are undoable.
+- Copy/cut/paste (Ctrl/Cmd+C, X, V):
+  - Copy takes the float, else the selection, else the whole active layer.
+  - Paste floats it on the active layer, where it was copied from if that
+    fits, else centered, and switches to Move.
+  - Colors follow the palette as it was at copy time.
+  - Copies also go to the system clipboard as PNG, and images copied in
+    other apps paste in nearest palette colors.
 - Palette panel:
   - Swatches: click for the primary color, right-click (or the context menu
     key) for the secondary, + to add.
@@ -99,7 +106,9 @@ Follow-ups:
 - Selection:
   - Whole-layer moves (nothing selected) don't float, so pixels moved off
     the canvas are still lost on release.
-  - Non-rectangular selections (lasso, magic wand) and copy/paste.
+  - Non-rectangular selections (lasso, magic wand).
+  - Clipboard: paste into a new layer, copy merged (all visible layers), and
+    on-screen buttons for touch devices (keyboard only today).
   - Animated marching ants.
   - Dragging inside a selection with the marquee to move only the outline.
 - Palettes:
@@ -165,7 +174,8 @@ src/
                  composite (+ visibleIndexAt), raster (line, rect, shape
                  constraints), brush (footprints, brush lines and
                  rectangles), pixelPerfect (L-corner removal for 1px
-                 strokes), rect (Rect geometry), floodFill, image (RGBA
+                 strokes), clipboard (copy/cut/paste clips), rect (Rect
+                 geometry), floodFill, image (RGBA
                  ↔ indices, upscale, flatten), edits (undoable changes),
                  layerEdits / selection / paletteEdits / documentEdits (edit
                  constructors), history
@@ -180,7 +190,8 @@ src/
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
                  fileCommands (open/save project, open/add/export image),
-                 keyboard shortcuts, brush panel,
+                 keyboard shortcuts, clipboard (copy/cut/paste events and
+                 the system clipboard), brush panel,
                  history controls, file panel, palette and palettes (library)
                  panels, layers panel, reference panel (+ loadReferenceFile),
                  DOM helpers (dom.ts) and inline SVG
@@ -461,6 +472,36 @@ storage without updating this section and the palette-swap design.
 - Keyboard selection actions live in `ui/commands.ts` (select all, deselect,
   drop, clear, nudge) and use the core constructors in `core/selection.ts`.
   Enter drops a float; Escape and Ctrl+D drop and deselect.
+
+### Clipboard
+
+- `core/clipboard.ts` (pure): a `PixelClip` is the copied indices, the rect
+  they came from, and the palette colors at copy time.
+  - `copyPixels` takes the float on the active layer (including off-canvas
+    pixels), else the selection, else the whole layer. `cutEdit` removes
+    the same thing.
+  - `pasteEdit` places it as a new float (`placeFloatingEdit`, replacing
+    any float), at its original rect when that's inside the document, else
+    centered.
+  - `clipIndices` keeps an index whose color is unchanged in the current
+    palette, else maps to the nearest color. That's how pasting after a
+    palette change or into another document keeps the look.
+- `ui/clipboard.ts`:
+  - The last copy is kept in memory, and also written to the system
+    clipboard as PNG (best effort; failures are ignored).
+  - Copy and cut run on keydown with the default prevented, because browsers
+    only fire `copy`/`cut` when something is selected or editable.
+  - Paste needs the `paste` event: it's the only way to read another app's
+    image without a permission prompt. `beforecopy`/`beforecut`/
+    `beforepaste` are cancelled outside text fields so the browser fires
+    them.
+  - If no `paste` event follows a Ctrl+V keydown, a `setTimeout` fallback
+    pastes the in-memory copy.
+  - A clipboard image that is pixel-identical to our own last copy pastes
+    the in-memory clip, keeping exact indices (duplicate palette colors
+    included). Any other image is mapped to the nearest palette colors.
+  - Text fields keep their normal clipboard. Hidden layers refuse with a
+    message in the File panel status.
 - The renderer draws the selection as a 1-device-pixel dashed black/white
   outline.
 
@@ -641,6 +682,13 @@ storage without updating this section and the palette-swap design.
     stub `HTMLInputElement.prototype.click` to check that Ctrl+O opens a
     picker. Test opening projects by dropping a `File` named `*.pixgrind`
     on `.stage`.
+  - Test clipboard handling by dispatching
+    `new ClipboardEvent('paste', { clipboardData })` with a `DataTransfer`
+    holding an image `File`. For the real key path, the browser pane's
+    `computer` key action (e.g. `ctrl+v`) works.
+    - Synthetic `KeyboardEvent`s never trigger the browser's clipboard
+      commands.
+    - Copies write a PNG to the user's real OS clipboard, so tell them.
   - Remove any test data saved to `localStorage` afterwards.
 - While the pane is hidden, `editor.renderer.viewSize` can stay 0×0 because
   ResizeObserver never fires, so `fitToView` does nothing. Call
