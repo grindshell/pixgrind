@@ -21,58 +21,81 @@ Core features:
 
 ## Status
 
-Pre-scaffold: the repo contains only this file. The first coding task is to
-scaffold the Vite project (see Commands). Treat the structure and design below
-as the plan to follow, not a description of existing code.
+Bootstrapped walking skeleton:
+
+- Document model with layers and an indexed palette (`src/core/`).
+- Layer compositing, Bresenham line rasterization, color/hex utilities.
+- Canvas renderer with checkerboard backdrop, integer zoom, crisp scaling.
+- Input: left-drag paints the selected color, right-drag erases, middle-drag
+  pans, wheel zooms around the cursor.
+- Palette panel showing the default PICO-8 palette; click to select a color.
+
+Not built yet, roughly in priority order: undo/redo, layer panel UI, tool
+selection (line, rect, fill, eyedropper, select/move), palette management and
+swap, image import/export, reference images, project files.
 
 ## Environment
 
 - Windows, PowerShell 7. Use PowerShell syntax in commands (no bash-isms).
-- Node 24, npm 11. Use **npm** (no yarn/pnpm) so there is one lockfile.
+- Node 24. Package manager is **pnpm** (pinned via `packageManager` in
+  `package.json`). Never use npm or yarn; they would create a second lockfile.
 
 ## Commands
 
 ```powershell
-# One-time scaffold. The directory is not empty (.git, AGENTS.md): when prompted,
-# choose "Ignore files and continue" — NEVER "Remove existing files".
-npm create vite@latest . -- --template vanilla-ts
-npm install
-npm install -D vitest
-
-npm run dev          # dev server
-npm run build        # tsc type-check + production build
-npm run preview      # serve the production build
-npm test             # vitest (add "test": "vitest run" to package.json)
-npx tsc --noEmit     # type-check only
+pnpm install
+pnpm dev             # dev server (http://localhost:5173)
+pnpm build           # tsc type-check + production build to dist/
+pnpm preview         # serve the production build
+pnpm test            # vitest run (once)
+pnpm test:watch      # vitest in watch mode
+pnpm typecheck       # tsc only
+pnpm add <pkg>       # runtime dependency
+pnpm add -D <pkg>    # dev dependency
 ```
 
-Before calling a task done: `npm run build` and `npm test` pass. For UI changes,
-also run the dev server and check the behavior in a browser.
+Before calling a task done: `pnpm build` and `pnpm test` pass. For UI changes,
+also check the behavior in a browser (see Verifying in the browser).
 
 ## Stack
 
-- Vanilla TypeScript, no UI framework. Revisit only if UI complexity demands it;
-  record the decision here if so.
+- Vite 8, TypeScript 6, Vitest 5. Vanilla TypeScript, no UI framework. Revisit
+  only if UI complexity demands it; record the decision here if so.
 - Rendering: Canvas 2D API.
-- Tests: Vitest.
-- TypeScript `strict: true`. No `any`; use `unknown` and narrow.
-- No runtime dependencies without a clear reason. Prefer small, focused ones.
+- No runtime dependencies yet. Add one only with a clear reason.
 
-## Planned layout
+TypeScript settings that affect how code is written (`tsconfig.json`):
+
+- `strict: true`. No `any`; use `unknown` and narrow.
+- `erasableSyntaxOnly`: **no `enum`, no `namespace`, no constructor parameter
+  properties** (`constructor(private x: T)`). Use union types / `as const`
+  objects and explicit fields.
+- `verbatimModuleSyntax`: type-only imports must use `import type` /
+  `import { type X }`.
+- `allowImportingTsExtensions`: relative imports include the `.ts` extension
+  (`import { plotLine } from './raster.ts'`).
+- `noUnusedLocals` / `noUnusedParameters` are on.
+
+## Layout
 
 ```
 src/
-  main.ts        entry point; builds the app and wires UI to state
-  core/          pure logic, no DOM: document, layers, palette, tools, history
-  render/        canvas rendering, viewport (zoom/pan), coordinate mapping
-  io/            import/export: images, palette files, project files
-  ui/            DOM panels, toolbars, keyboard/pointer input
-  styles/
+  main.ts        entry point; mounts the editor
+  style.css      global styles (dark theme, CSS custom properties on :root)
+  core/          pure logic, no DOM: color, palette, layer, pixelDocument,
+                 composite, raster
+  render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer
+  io/            (empty) import/export: images, palette files, project files
+  ui/            Editor state + mounting, canvas input, palette panel
+public/          static assets served as-is (favicon.svg)
 ```
 
-- `core/` must not import from `render/`, `ui/`, or touch `document`/`window`,
-  so it can be unit-tested in Node. Put tests next to the code as `*.test.ts`.
+- `core/` must not import from `render/`, `ui/`, or `io/`, and must not touch
+  `document`/`window`, so it can be unit-tested in Node. `render/viewport.ts`
+  is also pure and tested.
 - Dependency direction: `ui` → `render` / `io` → `core`.
+- Tests live next to the code as `*.test.ts` and import from `vitest`
+  explicitly (no globals).
 
 ## Core design decisions
 
@@ -80,20 +103,29 @@ src/
 
 Layer pixels store **palette indices**, not RGBA:
 
-- Each layer is a `Uint8Array` of length `width * height`, row-major
+- Each layer's `pixels` is a `Uint8Array` of length `width * height`, row-major
   (`i = y * width + x`).
-- Index `0` is reserved for **transparent**. Usable palette colors are 1–255.
-- The palette maps index → RGBA color.
+- Index `0` (`TRANSPARENT`) is reserved for transparency. Palette colors are
+  indices 1–255 (`MAX_PALETTE_COLORS`).
+- `Palette.colors[i]` is the color of pixel index `i + 1`. Use
+  `colorForIndex()` rather than indexing `colors` directly; it handles index 0
+  and indices past the end (both render transparent).
 
 This is what makes palette swapping cheap and lossless: switching palettes
 changes the colors without touching pixel data. Don't introduce per-layer RGBA
 storage without updating this section and the palette-swap design.
 
+### Colors
+
+- In memory a color is an `Rgba` number packed as `0xRRGGBBAA` (unsigned; see
+  `core/color.ts` for pack/unpack helpers).
+- Serialized as hex strings: `#rrggbb` when opaque, else `#rrggbbaa`
+  (`toHex` / `parseHex`).
+
 ### Palettes
 
-- A palette is an ordered list of colors plus a name. In memory keep a
-  `Uint32Array` of packed RGBA for rendering; serialize colors as hex strings
-  (`#rrggbb` / `#rrggbbaa`).
+- A palette is `{ name, colors }`. A document owns its own copy
+  (`createDocument` clones the palette passed in).
 - **Palette swap** = replace the active palette with another, mapping index to
   index. If the new palette is shorter, indices with no color need a defined
   fallback (e.g. nearest color in the new palette); never silently corrupt data.
@@ -106,45 +138,54 @@ storage without updating this section and the palette-swap design.
 
 ### Layers
 
-- Composite bottom to top with per-layer visibility and opacity.
-- Draw operations target the active layer only.
+- `doc.layers` is ordered bottom to top. Composite with per-layer visibility
+  and opacity (`compositeRgba`, straight-alpha "source over").
+- Draw operations target the editor's active layer only.
 - The reference image is **not** a layer: it is drawn under (or optionally
   over) the composite, has its own opacity/position/scale, and is excluded from
   export and from pixel data.
 
 ### Rendering
 
-- Composite layers into an `ImageData` at native resolution, then draw it
-  scaled by the zoom factor.
-- Pixel art must stay crisp: `ctx.imageSmoothingEnabled = false` for artwork
-  and CSS `image-rendering: pixelated` on canvases. (Smoothing may be enabled
-  for the reference image only.)
-- Keep screen ↔ pixel coordinate conversion in a single function in `render/`.
-  Pixel coordinates are always integers (`Math.floor`).
-- Redraw on demand via `requestAnimationFrame` with a dirty flag, not every frame.
+- `CanvasRenderer` composites layers into an `ImageData` at native resolution
+  on an offscreen canvas, then draws it scaled by the zoom factor onto the
+  screen canvas over a checkerboard.
+- Pixel art must stay crisp: `imageSmoothingEnabled = false` for artwork and
+  CSS `image-rendering: pixelated` on canvases. (Smoothing may be enabled for
+  the reference image only.)
+- The canvas backing store is sized to CSS size × `devicePixelRatio`. Resizes
+  come from a ResizeObserver plus a `devicePixelRatio` watcher (monitor
+  changes don't trigger ResizeObserver).
+- Zoom is always an integer (`clampZoom`, 1–64). Viewport offsets may be
+  fractional so zooming keeps the point under the cursor exact; the renderer
+  snaps them to device pixels when drawing.
+- `screenToPixel()` in `render/viewport.ts` is the only screen → document
+  coordinate conversion. Pixel coordinates are always integers.
+- Redraws go through `Editor.requestRender()` (one per animation frame), never
+  direct `render()` calls from input handlers.
 
 ### Tools and input
 
-- Use Pointer Events (mouse, pen, touch).
-- Pointer events skip pixels on fast strokes: interpolate between the previous
-  and current point with Bresenham's line algorithm.
+- Pointer Events (mouse, pen, touch), with pointer capture during gestures.
+- Pointer events skip pixels on fast strokes: strokes connect the previous and
+  current pixel with `plotLine` (Bresenham).
 - Planned tools: pencil, eraser (writes index 0), line, rectangle, fill
   (iterative flood fill, not recursive), eyedropper, select/move.
 
-### Undo/redo
+### Undo/redo (planned)
 
-- Every pixel-changing action is undoable. One stroke = one history entry.
+- Every pixel-changing action must be undoable. One stroke = one history entry.
 - Store diffs (changed indices + before/after values) or per-layer snapshots
   for large ops; don't snapshot the whole document per pointer move.
 
-### Import/export
+### Import/export (planned)
 
 - Image import: decode with `createImageBitmap` → `ImageData`. Importing as
   artwork requires quantizing to the palette: either map to the nearest palette
   colors or build a palette from the image's unique colors (error clearly if
   more than 255).
-- Image export: flatten visible layers, optional integer upscale (1×, 2×, 4×…,
-  nearest-neighbor), then `canvas.toBlob`.
+- Image export: flatten visible layers (`compositeRgba`), optional integer
+  upscale (1×, 2×, 4×…, nearest-neighbor), then `canvas.toBlob`.
   - PNG: default; lossless, keeps transparency.
   - JPG: no alpha, so flatten onto a user-chosen background color; it is lossy
     and adds artifacts, so export at max quality and say so in the UI.
@@ -153,11 +194,21 @@ storage without updating this section and the palette-swap design.
   and layers (pixel data base64-encoded). Optionally embed the reference image.
   Bump `version` and add a migration when the schema changes.
 
+## Verifying in the browser
+
+- `.claude/launch.json` defines a `dev` server config (port 5173) for preview
+  tooling.
+- In dev builds the editor is exposed as `window.pixgrind` (see `main.ts`), so
+  automation can read `pixgrind.viewport`, `pixgrind.doc`, and
+  `pixgrind.activeLayer.pixels` instead of guessing coordinates.
+- Synthetic `PointerEvent`/`WheelEvent`s dispatched on the canvas exercise the
+  real input path. Compute client coordinates from `pixgrind.viewport`.
+
 ## Conventions
 
 - Named exports only; no default exports.
 - Small modules with one responsibility. Files `camelCase.ts`; types and classes
-  `PascalCase`.
+  `PascalCase`; constants `UPPER_SNAKE_CASE`.
 - Keep `core/` functions pure where practical (input → output, no hidden state)
   so they are easy to test.
 - Unit-test core logic: palette parsing/serialization, palette swap, flood fill,
