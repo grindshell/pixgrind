@@ -145,51 +145,65 @@ export interface ModelMesh {
  * The visible faces of the model. A face is left out where a neighboring
  * box covers it: one that's opaque, or the same color (so a translucent
  * color shows no faces inside itself). Side faces are cut where only part of
- * them is covered; each face is one quad, however deep.
+ * them is covered.
+ *
+ * Faces of one color that lie side by side in one plane are merged into
+ * rectangles (`FacePlane`), so a flat area or a straight edge takes one quad
+ * however many pixels it spans.
  */
 export function buildMesh(model: VoxelModel, palette: Palette): ModelMesh {
   const { width, height, columns } = model;
   const opaque = new Uint8Array(256);
   for (let index = 1; index < 256; index++) opaque[index] = alpha(colorForIndex(palette, index)) === 255 ? 1 : 0;
   const hides = (cover: Run, face: Run) => opaque[cover.index] === 1 || cover.index === face.index;
+  const neighbor = (x: number, y: number) => (x >= 0 && y >= 0 && x < width && y < height ? columns[y * width + x] : undefined);
+
   const builders = new Map<number, PartBuilder>();
   const part = (index: number) => {
     let builder = builders.get(index);
     if (!builder) builders.set(index, (builder = new PartBuilder()));
     return builder;
   };
-  const neighbor = (x: number, y: number) => (x >= 0 && y >= 0 && x < width && y < height ? columns[y * width + x] : undefined);
   const centerX = width / 2;
+
+  // Planes per facing: depths for front and back, column edges for right and
+  // left, row edges for top and bottom. Pixels are visited row by row, which
+  // feeds each plane its rows in order.
+  const planes: Record<Facing, Array<FacePlane | undefined>> = { front: [], back: [], right: [], left: [], top: [], bottom: [] };
+  const add = (facing: Facing, plane: number, row: number, a: number, b: number, index: number) => {
+    let faces = planes[facing][plane];
+    if (!faces) {
+      faces = new FacePlane((rect) => faceQuad(part(rect.index), facing, plane, rect, centerX, height));
+      planes[facing][plane] = faces;
+    }
+    faces.add(row, a, b, index);
+  };
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const runs = columns[y * width + x];
       if (!runs) continue;
-      const x0 = x - centerX;
-      const x1 = x0 + 1;
-      const y0 = height - y - 1;
-      const y1 = y0 + 1;
-      const sides: Array<[readonly Run[] | undefined, Side]> = [
-        [neighbor(x + 1, y), 'right'],
-        [neighbor(x - 1, y), 'left'],
-        [neighbor(x, y - 1), 'top'],
-        [neighbor(x, y + 1), 'bottom'],
-      ];
-      runs.forEach((run, k) => {
-        const builder = part(run.index);
+      const right = neighbor(x + 1, y);
+      const left = neighbor(x - 1, y);
+      const above = neighbor(x, y - 1);
+      const below = neighbor(x, y + 1);
+      for (let k = 0; k < runs.length; k++) {
+        const run = runs[k];
+        const { index } = run;
         const before = runs[k - 1];
         const after = runs[k + 1];
-        if (!(before && before.end === run.start && hides(before, run))) {
-          builder.quad([x0, y0, zAt(run.start)], [1, 0, 0], [0, 1, 0], [0, 0, 1]);
-        }
-        if (!(after && after.start === run.end && hides(after, run))) {
-          builder.quad([x1, y0, zAt(run.end)], [-1, 0, 0], [0, 1, 0], [0, 0, -1]);
-        }
-        for (const [covers, side] of sides) {
-          uncovered(run, covers, hides, (a, b) => sideQuad(builder, side, x0, x1, y0, y1, a, b));
-        }
-      });
+        if (!(before && before.end === run.start && hides(before, run))) add('front', run.start, y, x, x + 1, index);
+        if (!(after && after.start === run.end && hides(after, run))) add('back', run.end, y, x, x + 1, index);
+        uncovered(run, right, hides, (a, b) => add('right', x + 1, y, a, b, index));
+        uncovered(run, left, hides, (a, b) => add('left', x, y, a, b, index));
+        uncovered(run, above, hides, (a, b) => add('top', y, x, a, b, index));
+        uncovered(run, below, hides, (a, b) => add('bottom', y + 1, x, a, b, index));
+      }
     }
+  }
+
+  for (const facing of FACINGS) {
+    for (const faces of planes[facing]) faces?.finish();
   }
 
   const parts = [...builders]
@@ -198,8 +212,89 @@ export function buildMesh(model: VoxelModel, palette: Palette): ModelMesh {
   return { parts, quads: parts.reduce((sum, p) => sum + p.indices.length / 6, 0), bounds: meshBounds(parts) };
 }
 
-type Side = 'right' | 'left' | 'top' | 'bottom';
+/** Which way a face points: front is +z (toward the viewer), top is +y, right is +x. */
+type Facing = 'front' | 'back' | 'right' | 'left' | 'top' | 'bottom';
+const FACINGS: readonly Facing[] = ['front', 'back', 'right', 'left', 'top', 'bottom'];
 type Vec3 = [number, number, number];
+
+/**
+ * Faces in one plane, all pointing one way, as rectangles: rows `from` up to
+ * `to`, each spanning `a` up to `b`.
+ *
+ * | Facing       | Plane        | Rows        | Span        |
+ * | ------------ | ------------ | ----------- | ----------- |
+ * | front, back  | depth        | document y  | document x  |
+ * | right, left  | column edge  | document y  | depth       |
+ * | top, bottom  | row edge     | document x  | depth       |
+ */
+interface FaceRect {
+  a: number;
+  b: number;
+  index: number;
+  from: number;
+  to: number;
+}
+
+/**
+ * Merges the faces of one plane as they arrive: row by row in order, each
+ * row's spans sorted and not overlapping. Touching spans of one color in a
+ * row join, and a rectangle grows into the next row while that row has
+ * exactly its span in its color. Not always the fewest rectangles, but
+ * linear, and flat areas and straight edges come out as one quad.
+ *
+ * Each rectangle goes to `emit` as soon as it can't grow, so only two rows'
+ * worth are held at a time.
+ */
+class FacePlane {
+  private readonly emit: (rect: FaceRect) => void;
+  private row = -1;
+  /** Spans of `row`, so far. */
+  private spans: FaceRect[] = [];
+  /** Rectangles reaching the row before `row`, sorted by `a`. */
+  private open: FaceRect[] = [];
+
+  constructor(emit: (rect: FaceRect) => void) {
+    this.emit = emit;
+  }
+
+  add(row: number, a: number, b: number, index: number): void {
+    if (row !== this.row) {
+      this.endRow();
+      this.row = row;
+    }
+    const last = this.spans[this.spans.length - 1];
+    if (last && last.b === a && last.index === index) last.b = b;
+    else this.spans.push({ a, b, index, from: row, to: row + 1 });
+  }
+
+  /** Emits the rectangles still open. Call once, after the last `add`. */
+  finish(): void {
+    this.endRow();
+    for (const rect of this.open) this.emit(rect);
+    this.open = [];
+  }
+
+  /** Grows the open rectangles that `row` repeats, emits the rest, and opens the row's new spans. */
+  private endRow(): void {
+    const { open, spans } = this;
+    const next: FaceRect[] = [];
+    let i = 0;
+    for (const span of spans) {
+      while (i < open.length && open[i].a < span.a) this.emit(open[i++]);
+      const rect = open[i];
+      if (rect && rect.to === span.from && rect.a === span.a && rect.b === span.b && rect.index === span.index) {
+        rect.to = span.to;
+        next.push(rect);
+        i++;
+      } else {
+        next.push(span);
+      }
+    }
+    while (i < open.length) this.emit(open[i++]);
+    this.open = next;
+    this.spans = [];
+  }
+}
 
 /** Mesh z of a depth: `0 - depth`, since `-depth` makes -0 at the picture plane. */
 function zAt(depth: number): number {
@@ -227,20 +322,35 @@ function uncovered(
   if (from < run.end) emit(from, run.end);
 }
 
-/** A side face of the column at x0..x1, y0..y1 (mesh units), spanning depths a..b. */
-function sideQuad(builder: PartBuilder, side: Side, x0: number, x1: number, y0: number, y1: number, a: number, b: number): void {
-  const length = b - a;
-  switch (side) {
+/** Adds the quad of a merged rectangle of faces, in mesh coordinates. */
+function faceQuad(builder: PartBuilder, facing: Facing, plane: number, rect: FaceRect, centerX: number, height: number): void {
+  const { a, b, from, to } = rect;
+  const rows = to - from;
+  const normal = NORMALS[facing];
+  switch (facing) {
+    case 'front':
+      return builder.quad([a - centerX, height - to, zAt(plane)], [b - a, 0, 0], [0, rows, 0], normal);
+    case 'back':
+      return builder.quad([b - centerX, height - to, zAt(plane)], [a - b, 0, 0], [0, rows, 0], normal);
     case 'right':
-      return builder.quad([x1, y0, zAt(a)], [0, 0, -length], [0, 1, 0], [1, 0, 0]);
+      return builder.quad([plane - centerX, height - to, zAt(a)], [0, 0, a - b], [0, rows, 0], normal);
     case 'left':
-      return builder.quad([x0, y0, zAt(b)], [0, 0, length], [0, 1, 0], [-1, 0, 0]);
+      return builder.quad([plane - centerX, height - to, zAt(b)], [0, 0, b - a], [0, rows, 0], normal);
     case 'top':
-      return builder.quad([x0, y1, zAt(a)], [1, 0, 0], [0, 0, -length], [0, 1, 0]);
+      return builder.quad([from - centerX, height - plane, zAt(a)], [rows, 0, 0], [0, 0, a - b], normal);
     case 'bottom':
-      return builder.quad([x0, y0, zAt(b)], [1, 0, 0], [0, 0, length], [0, -1, 0]);
+      return builder.quad([from - centerX, height - plane, zAt(b)], [rows, 0, 0], [0, 0, b - a], normal);
   }
 }
+
+const NORMALS: Readonly<Record<Facing, Vec3>> = {
+  front: [0, 0, 1],
+  back: [0, 0, -1],
+  right: [1, 0, 0],
+  left: [-1, 0, 0],
+  top: [0, 1, 0],
+  bottom: [0, -1, 0],
+};
 
 /** Collects one part's quads in typed arrays that grow as needed. */
 class PartBuilder {
@@ -254,25 +364,30 @@ class PartBuilder {
       this.positions = grow(this.positions);
       this.normals = grow(this.normals);
     }
-    const corners: Vec3[] = [
-      o,
-      [o[0] + u[0], o[1] + u[1], o[2] + u[2]],
-      [o[0] + u[0] + v[0], o[1] + u[1] + v[1], o[2] + u[2] + v[2]],
-      [o[0] + v[0], o[1] + v[1], o[2] + v[2]],
-    ];
-    for (const corner of corners) {
-      this.positions.set(corner, this.vertices * 3);
-      this.normals.set(normal, this.vertices * 3);
-      this.vertices++;
+    const { positions, normals } = this;
+    let i = this.vertices * 3;
+    for (let corner = 0; corner < 4; corner++) {
+      const withU = corner === 1 || corner === 2;
+      const withV = corner >= 2;
+      for (let axis = 0; axis < 3; axis++, i++) {
+        positions[i] = o[axis] + (withU ? u[axis] : 0) + (withV ? v[axis] : 0);
+        normals[i] = normal[axis];
+      }
     }
+    this.vertices += 4;
   }
 
   build(index: number, color: Rgba): MeshPart {
     const quads = this.vertices / 4;
     const indices = new Uint32Array(quads * 6);
-    for (let q = 0; q < quads; q++) {
+    for (let q = 0, i = 0; q < quads; q++) {
       const v = q * 4;
-      indices.set([v, v + 1, v + 2, v, v + 2, v + 3], q * 6);
+      indices[i++] = v;
+      indices[i++] = v + 1;
+      indices[i++] = v + 2;
+      indices[i++] = v;
+      indices[i++] = v + 2;
+      indices[i++] = v + 3;
     }
     return {
       index,

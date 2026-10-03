@@ -129,12 +129,15 @@ Built so far:
   - 3D view pane: WebGL 2, drag to orbit, right/middle/Shift-drag to pan,
     wheel to zoom, double-click or Reset view to frame the model.
   - Panes open beside the canvas; drag their left edge to resize.
+  - Meshes merge same-color faces that lie side by side in one plane, so
+    flat areas and straight edges are one quad each (3D view and GLB).
 
 Follow-ups:
 - 3D model:
-  - Model optimization: merge coplanar same-color faces (greedy meshing)
-    in `buildMesh`. Today every pixel's front and back are a quad each, so
-    large fully painted documents make big meshes.
+  - More mesh optimization: share vertices between quads of a part that
+    meet at corners (today each quad has its own four), and fewer
+    rectangles where rows don't repeat exactly (e.g. a minimum rectangle
+    partition per plane).
   - "Diagonal" pixels: a pixel whose extrusion is a slanted face instead of
     a cube.
   - A wider side view: edit along rows (top view) as well as columns.
@@ -756,9 +759,17 @@ storage without updating this section and the palette-swap design.
   - `buildMesh` makes quads per palette color (a `MeshPart` each). Faces
     covered by a neighbor that's opaque or the same color are dropped, so
     translucent colors show what's behind them but no faces inside
-    themselves. Side faces are cut into the stretches nothing covers; one
-    quad per stretch however deep. Front and back faces are one quad per
-    pixel (greedy merging is a follow-up).
+    themselves. Side faces are cut into the stretches nothing covers.
+  - Faces of one color side by side in one plane merge into rectangles
+    (`FacePlane`, one per facing and plane): spans join along a row, and a
+    rectangle grows into the next row while that row repeats its span
+    exactly. Linear time, emitting each rectangle as soon as it closes
+    (keeping them all made garbage collection dominate). Not the fewest
+    rectangles possible, but a flat area or a straight edge is one quad.
+    Merged quads meet at T-junctions, which hasn't shown seams.
+  - The test checks the mesh unit face by unit face against a voxel-by-voxel
+    reference on random documents: every exposed face covered exactly once.
+    Keep it when changing the merging.
   - Mesh coordinates follow glTF: y up, front faces +z, one unit per pixel,
     x centered on the document, y = 0 at its bottom edge, z = 0 at the
     picture plane (boxes go toward -z). Triangles are counter-clockwise from

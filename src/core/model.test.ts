@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { alpha } from './color.ts';
 import { packExtrusion } from './extrusion.ts';
 import { createLayer } from './layer.ts';
-import { buildMesh, buildVoxelModel, pixelRuns, runAt, type MeshPart } from './model.ts';
-import { createPalette } from './palette.ts';
+import { buildMesh, buildVoxelModel, pixelRuns, runAt, type MeshPart, type ModelMesh } from './model.ts';
+import { colorForIndex, createPalette } from './palette.ts';
 import { createDocument, type PixelDocument } from './pixelDocument.ts';
 
 const RED = 0xff0000ff;
@@ -35,6 +36,90 @@ function quads(part: MeshPart): Array<{ normal: number[]; min: number[]; max: nu
     });
   }
   return result;
+}
+
+/** A pseudo-random number generator (mulberry32) giving numbers in [0, 1). */
+function seeded(seed: number): () => number {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * A small document of up to three layers, with colors (including glass and
+ * the fully transparent one) and extrusions that often repeat a neighbor's,
+ * so there's plenty to merge and plenty of edges.
+ */
+function randomDoc(random: () => number): PixelDocument {
+  const pick = (count: number) => Math.floor(random() * count);
+  const doc = createDocument(1 + pick(6), 1 + pick(6), palette);
+  for (let n = pick(3); n > 0; n--) doc.layers.push(createLayer(doc.width, doc.height, 'Layer'));
+  for (const layer of doc.layers) {
+    for (let i = 0; i < layer.pixels.length; i++) {
+      const copy = i > 0 && random() < 0.6;
+      layer.pixels[i] = copy ? layer.pixels[i - 1] : pick(5);
+      layer.extrusion[i] = copy && random() < 0.7 ? layer.extrusion[i - 1] : packExtrusion(pick(4), 1 + pick(4));
+    }
+  }
+  return doc;
+}
+
+/** Face directions as document steps (x right, y down, z into the picture) to the voxel that could cover them, and mesh normals. */
+const DIRECTIONS: ReadonlyArray<[number, number, number, string]> = [
+  [0, 0, -1, '0,0,1'],
+  [0, 0, 1, '0,0,-1'],
+  [1, 0, 0, '1,0,0'],
+  [-1, 0, 0, '-1,0,0'],
+  [0, -1, 0, '0,1,0'],
+  [0, 1, 0, '0,-1,0'],
+];
+
+/** Every unit face that should show, found voxel by voxel: "x,y,z normal" → palette index. */
+function exposedFaces(doc: PixelDocument): Map<string, number> {
+  const { width, height, depth, columns } = buildVoxelModel(doc);
+  const at = (x: number, y: number, z: number) =>
+    x >= 0 && y >= 0 && x < width && y < height ? (runAt(columns[y * width + x], z)?.index ?? 0) : 0;
+  const hides = (cover: number, face: number) => cover !== 0 && (alpha(colorForIndex(doc.palette, cover)) === 255 || cover === face);
+  const faces = new Map<string, number>();
+  for (let z = 0; z < depth; z++) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const index = at(x, y, z);
+        if (!index) continue;
+        for (const [dx, dy, dz, normal] of DIRECTIONS) {
+          if (!hides(at(x + dx, y + dy, z + dz), index)) faces.set(`${x},${y},${z} ${normal}`, index);
+        }
+      }
+    }
+  }
+  return faces;
+}
+
+/** Every unit face the mesh covers, keyed like `exposedFaces`. Fails if quads overlap. */
+function meshFaces(doc: PixelDocument, mesh: ModelMesh): Map<string, number> {
+  const faces = new Map<string, number>();
+  for (const part of mesh.parts) {
+    for (const { normal, min, max } of quads(part)) {
+      // Mesh centers of the voxels behind the face's unit squares.
+      const centers = (axis: number) =>
+        normal[axis] !== 0
+          ? [min[axis] - normal[axis] / 2]
+          : Array.from({ length: max[axis] - min[axis] }, (_, i) => min[axis] + i + 0.5);
+      for (const mx of centers(0)) {
+        for (const my of centers(1)) {
+          for (const mz of centers(2)) {
+            const key = `${mx + doc.width / 2 - 0.5},${doc.height - my - 0.5},${-mz - 0.5} ${normal.join(',')}`;
+            expect(faces.has(key), `overlap at ${key}`).toBe(false);
+            faces.set(key, part.index);
+          }
+        }
+      }
+    }
+  }
+  return faces;
 }
 
 describe('buildVoxelModel', () => {
@@ -103,10 +188,46 @@ describe('buildMesh', () => {
 
   it('drops faces between touching boxes, and spans deep sides with one quad', () => {
     const mesh = meshOf(docFrom(['11'], () => [0, 5]));
-    // Two boxes: 12 faces less the 2 that touch.
-    expect(mesh.quads).toBe(10);
+    // Two boxes, merged into one.
+    expect(mesh.quads).toBe(6);
     const right = quads(mesh.parts[0]).filter((q) => q.normal[0] === 1);
     expect(right).toEqual([{ normal: [1, 0, 0], min: [1, 0, -5], max: [1, 1, 0] }]);
+  });
+
+  it('merges a filled rectangle of one color into a single box', () => {
+    const mesh = meshOf(docFrom(['111', '111'], () => [1, 3]));
+    expect(mesh.quads).toBe(6);
+    expect(quads(mesh.parts[0]).find((q) => q.normal[2] === 1)).toEqual({ normal: [0, 0, 1], min: [-1.5, 0, -1], max: [1.5, 2, -1] });
+    expect(mesh.bounds).toEqual({ min: [-1.5, 0, -4], max: [1.5, 2, -1] });
+  });
+
+  it('merges only faces of one color', () => {
+    const mesh = meshOf(docFrom(['1211']));
+    const [red, green] = mesh.parts.map(quads);
+    expect(red.filter((q) => q.normal[2] === 1).map((q) => [q.min[0], q.max[0]])).toEqual([
+      [-2, -1],
+      [0, 2],
+    ]);
+    // Front, back, top and bottom twice, and each end.
+    expect(red.length).toBe(10);
+    expect(green.length).toBe(4);
+  });
+
+  it('merges side faces across rows only where they span the same depths', () => {
+    const mesh = meshOf(docFrom(['1', '1', '1'], (_, y) => [0, y < 2 ? 2 : 3]));
+    const right = quads(mesh.parts[0]).filter((q) => q.normal[0] === 1);
+    expect(right).toEqual([
+      { normal: [1, 0, 0], min: [0.5, 1, -2], max: [0.5, 3, 0] },
+      { normal: [1, 0, 0], min: [0.5, 0, -3], max: [0.5, 1, 0] },
+    ]);
+  });
+
+  it('covers exactly the faces a voxel-by-voxel check finds, once each', () => {
+    const random = seeded(7);
+    for (let n = 0; n < 40; n++) {
+      const doc = randomDoc(random);
+      expect(meshFaces(doc, meshOf(doc))).toEqual(exposedFaces(doc));
+    }
   });
 
   it('cuts side faces where a neighbor covers only part of them', () => {
@@ -124,7 +245,7 @@ describe('buildMesh', () => {
     // The red box's right face shows through the glass; glass hides nothing.
     expect(quads(behind.parts[0]).some((q) => q.normal[0] === 1)).toBe(true);
     expect(quads(behind.parts[1]).some((q) => q.normal[0] === -1)).toBe(false);
-    expect(meshOf(docFrom(['33'])).quads).toBe(10);
+    expect(meshOf(docFrom(['33'])).quads).toBe(6);
   });
 
   it('hides front and back faces between stacked runs', () => {
