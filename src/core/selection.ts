@@ -2,7 +2,6 @@ import {
   combineEdits,
   pixelEditFromArray,
   pixelEditFromCells,
-  pixelEditFromValues,
   type Edit,
   type FloatingEdit,
   type PixelEdit,
@@ -11,7 +10,7 @@ import {
 import { packCell, type Cell } from './extrusion.ts';
 import { planeRect, planeSize, type Facing } from './facing.ts';
 import { inLayer, type Layer } from './layer.ts';
-import { clipMask, invertMask, maskHas, masksEqual, type Mask } from './mask.ts';
+import { clipMask, invertMask, masksEqual, type Mask } from './mask.ts';
 import { TRANSPARENT } from './palette.ts';
 import { cellAt, findLayer, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
 import { translateRect, type Rect } from './rect.ts';
@@ -250,12 +249,15 @@ export function clearSelectionEdit(doc: PixelDocument, layer: Layer): PixelEdit 
 
 /** Clears `layer`'s pixels in `area` (on the layer) to transparent. Null when nothing changes. */
 export function clearAreaEdit(layer: Layer, area: Mask, label: string): PixelEdit | null {
-  const values = new Map<number, number>();
-  const { rect } = area;
-  for (let y = rect.y; y < rect.y + rect.height; y++) {
-    for (let x = rect.x; x < rect.x + rect.width; x++) {
-      if (maskHas(area, x, y)) values.set(y * layer.width + x, TRANSPARENT);
+  const after = layer.pixels.slice();
+  const { rect, bits } = area;
+  for (let j = 0; j < rect.height; j++) {
+    const row = (rect.y + j) * layer.width + rect.x;
+    if (!bits) {
+      after.fill(TRANSPARENT, row, row + rect.width);
+      continue;
     }
+    for (let i = 0; i < rect.width; i++) if (bits[j * rect.width + i]) after[row + i] = TRANSPARENT;
   }
-  return pixelEditFromValues(layer, label, values);
+  return pixelEditFromArray(layer, label, after);
 }

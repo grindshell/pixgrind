@@ -10,7 +10,7 @@ import {
   type Brush,
   type BrushMask,
 } from './brush.ts';
-import { plotLine } from './raster.ts';
+import { plotLine, plotRect } from './raster.ts';
 
 /** The footprint drawn as rows of `#` (covered) and `.`, with the pointer pixel at (0, 0) marked `@`. */
 function picture(mask: BrushMask): string[] {
@@ -117,6 +117,38 @@ describe('brushLine', () => {
       expect(covered((plot) => brushLine(mask, x0, y0, x1, y1, plot))).toEqual(expected);
     }
   });
+
+  it('continues a stroke with only what each segment newly reaches', () => {
+    const mask = brushMask(round(7));
+    const points = [[0, 0], [6, 2], [6, 2], [-3, 9], [-2, 9]];
+    const expected = covered((plot) => {
+      for (let k = 1; k < points.length; k++) {
+        const [[x0, y0], [x1, y1]] = [points[k - 1], points[k]];
+        plotLine(x0, y0, x1, y1, (x, y) => stampBrush(mask, x, y, plot));
+      }
+    });
+    const stroke = (continued: boolean) => {
+      let plotted = 0;
+      const pixels = covered((plot) => {
+        const counting = (x: number, y: number) => {
+          plotted++;
+          plot(x, y);
+        };
+        brushLine(mask, 0, 0, 0, 0, counting);
+        for (let k = 1; k < points.length; k++) {
+          const [[x0, y0], [x1, y1]] = [points[k - 1], points[k]];
+          brushLine(mask, x0, y0, x1, y1, counting, continued);
+        }
+      });
+      return { pixels, plotted };
+    };
+    const continued = stroke(true);
+    expect(continued.pixels).toEqual(expected);
+    // Each continued segment skips the full stamp at its start.
+    expect(stroke(false).plotted - continued.plotted).toBe((points.length - 1) * mask.pixels.length);
+    // A continued segment back at the same pixel adds nothing.
+    expect(covered((plot) => brushLine(mask, 4, 4, 4, 4, plot, true)).size).toBe(0);
+  });
 });
 
 describe('brushRect', () => {
@@ -134,6 +166,19 @@ describe('brushRect', () => {
     expect(outline.has('3,3')).toBe(false);
     expect(outline.has('-1,-1')).toBe(true);
     expect(covered((plot) => brushRect(mask, 0, 0, 6, 6, true, plot)).size).toBe(81);
+  });
+
+  it('covers the same pixels as stamping along the outline, flat ones included', () => {
+    const mask = brushMask(round(6));
+    for (const [x0, y0, x1, y1] of [
+      [0, 0, 7, 4],
+      [5, 5, 5, 5],
+      [3, 1, -4, 1],
+      [2, 6, 2, -1],
+    ]) {
+      const expected = covered((plot) => plotRect(x0, y0, x1, y1, false, (x, y) => stampBrush(mask, x, y, plot)));
+      expect(covered((plot) => brushRect(mask, x0, y0, x1, y1, false, plot))).toEqual(expected);
+    }
   });
 });
 

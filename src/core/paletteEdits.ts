@@ -1,5 +1,5 @@
 import { colorDistance, type Rgba } from './color.ts';
-import { combineEdits, pixelEditFromValues, type Edit, type PaletteEdit, type PixelEdit } from './edits.ts';
+import { combineEdits, pixelEditFromArray, type Edit, type PaletteEdit, type PixelEdit } from './edits.ts';
 import { clonePalette, createPalette, MAX_PALETTE_COLORS, palettesEqual, TRANSPARENT, type Palette } from './palette.ts';
 import type { PixelDocument } from './pixelDocument.ts';
 
@@ -141,11 +141,10 @@ function paletteChange(doc: PixelDocument, palette: Palette, mapping: Uint8Array
 function remapPixels(doc: PixelDocument, mapping: Uint8Array, label: string): PixelEdit[] {
   const edits: PixelEdit[] = [];
   for (const layer of doc.layers) {
-    const values = new Map<number, number>();
-    layer.pixels.forEach((index, offset) => {
-      if (mapping[index] !== index) values.set(offset, mapping[index]);
-    });
-    const edit = pixelEditFromValues(layer, label, values);
+    const { pixels } = layer;
+    const after = new Uint8Array(pixels.length);
+    for (let i = 0; i < pixels.length; i++) after[i] = mapping[pixels[i]];
+    const edit = pixelEditFromArray(layer, label, after);
     if (edit) edits.push(edit);
   }
   return edits;

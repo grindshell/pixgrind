@@ -102,14 +102,25 @@ export function stampBrush(mask: BrushMask, x: number, y: number, plot: Plot): v
 
 /**
  * Calls `plot` for every pixel the brush covers when dragged from (x0, y0)
- * to (x1, y1), both included. Pixels may be plotted more than once.
+ * to (x1, y1), both included. Pixels may be plotted more than once. With
+ * `continued`, the brush has already covered everything up to (x0, y0) (a
+ * stroke's next segment), so only pixels it newly reaches are plotted.
  */
-export function brushLine(mask: BrushMask, x0: number, y0: number, x1: number, y1: number, plot: Plot): void {
+export function brushLine(
+  mask: BrushMask,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  plot: Plot,
+  continued = false,
+): void {
   let first = true;
   plotLine(x0, y0, x1, y1, (x, y) => {
     // Each step moves at most one pixel, so after the first stamp only the
     // brush's edge can reach new pixels.
-    for (const p of first ? mask.pixels : mask.edge) plot(x + p.x, y + p.y);
+    if (!first) for (const p of mask.edge) plot(x + p.x, y + p.y);
+    else if (!continued) stampBrush(mask, x, y, plot);
     first = false;
   });
 }
@@ -128,8 +139,9 @@ export function brushRect(
   plot: Plot,
 ): void {
   if (filled) plotRect(x0, y0, x1, y1, true, plot);
+  // Each side starts where the last ended, already stamped.
   brushLine(mask, x0, y0, x1, y0, plot);
-  brushLine(mask, x1, y0, x1, y1, plot);
-  brushLine(mask, x1, y1, x0, y1, plot);
-  brushLine(mask, x0, y1, x0, y0, plot);
+  brushLine(mask, x1, y0, x1, y1, plot, true);
+  brushLine(mask, x1, y1, x0, y1, plot, true);
+  brushLine(mask, x0, y1, x0, y0, plot, true);
 }

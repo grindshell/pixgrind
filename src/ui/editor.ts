@@ -3,6 +3,7 @@ import type { Rgba } from '../core/color.ts';
 import {
   applyEdit,
   beginPixelEdit,
+  changesOtherSides,
   editedSide,
   editSetsFloating,
   followIndex,
@@ -111,10 +112,12 @@ export class Editor {
   private lasso: readonly Point[] | null = null;
   /** Plane size the viewport was last fitted to. */
   private fittedSize: { width: number; height: number };
-  /** The guide for the side being edited, built for `stamp`. */
-  private guideCache: { facing: Facing; stamp: number; image: IndexImage } | null = null;
-  /** Goes up whenever other sides may have changed, so the guide is rebuilt. Strokes on one side don't change it. */
-  private guideStamp = 0;
+  /**
+   * The guide (the other sides' model) for the side it was built for, kept
+   * until a change outside that side's layers could show in it (`dropGuide`).
+   * Edits to that side's own layers, the most common, never do.
+   */
+  private guideCache: { facing: Facing; image: IndexImage } | null = null;
   /** History position when the document was last saved or opened as a project. */
   private savedPosition: object;
   /** Layer visibility is saved in projects but changes outside history, so it's tracked separately. */
@@ -411,7 +414,7 @@ export class Editor {
     if (!layer || layer.visible === visible) return;
     layer.visible = visible;
     this.visibilityChanged = true;
-    this.guideStamp++;
+    this.dropGuide(layer.facing);
     this.requestRender();
     this.notify();
   }
@@ -423,9 +426,9 @@ export class Editor {
   previewLayerOpacity(layerId: string, opacity: number): void {
     const layer = findLayer(this.doc, layerId);
     if (!layer) return;
+    // A layer at 0% isn't modeled; other opacities don't change the model.
+    if (opacity > 0 !== layer.opacity > 0) this.dropGuide(layer.facing);
     layer.opacity = opacity;
-    // A layer at 0% isn't modeled.
-    this.guideStamp++;
     this.requestRender();
   }
 
@@ -585,11 +588,20 @@ export class Editor {
 
   /** The guide for the side being edited, rebuilt only when other sides may have changed. */
   private guide(): IndexImage {
-    const cached = this.guideCache;
-    if (cached?.facing === this.facing && cached.stamp === this.guideStamp) return cached.image;
-    const image = otherSidesView(this.doc, this.facing);
-    this.guideCache = { facing: this.facing, stamp: this.guideStamp, image };
-    return image;
+    if (this.guideCache?.facing !== this.facing) {
+      this.guideCache = { facing: this.facing, image: otherSidesView(this.doc, this.facing) };
+    }
+    return this.guideCache.image;
+  }
+
+  /**
+   * Drops the cached guide when a change to a layer on `facing` would show
+   * in it (any side but the one it was built for). Compared with that side,
+   * not the one being edited: an edit can land on another side before the
+   * next render rebuilds the guide.
+   */
+  private dropGuide(facing: Facing): void {
+    if (this.guideCache && this.guideCache.facing !== facing) this.guideCache = null;
   }
 
   /** Fits the side being edited in view at the largest whole-number zoom. */
@@ -611,7 +623,7 @@ export class Editor {
 
   private documentChanged(edit: Edit, direction: EditDirection): void {
     this.documentRevision++;
-    this.guideStamp++;
+    if (this.guideCache && changesOtherSides(this.doc, edit, this.guideCache.facing)) this.guideCache = null;
     this.fitIfResized();
     this.syncActiveLayers();
     // The paint colors follow their colors when they're renumbered, and stay

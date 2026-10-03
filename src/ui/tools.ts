@@ -100,11 +100,15 @@ function freehand(editor: Editor, start: ToolInput, index: number, label: string
   const session = editor.beginStroke(label);
   const mask = brushMask(editor.brush);
   const perfect = editor.pixelPerfect && editor.brush.size === 1 ? pixelPerfectPath() : null;
-  let last: Point = start;
+  /** Where the stroke has painted up to; null before the first point. */
+  let last: Point | null = null;
   const paintTo = (to: Point): boolean => {
-    if (!perfect) return paintLine(session, mask, last, to, index);
+    const from = last ?? to;
+    const continued = last !== null;
+    last = to;
+    if (!perfect) return paintLine(session, mask, from, to, index, continued);
     let changed = false;
-    plotLine(last.x, last.y, to.x, to.y, (x, y) => {
+    plotLine(from.x, from.y, to.x, to.y, (x, y) => {
       changed = session.setPixel(x, y, index) || changed;
       const corner = perfect.add({ x, y });
       if (corner) changed = session.restore(corner.x, corner.y) || changed;
@@ -116,7 +120,6 @@ function freehand(editor: Editor, start: ToolInput, index: number, label: string
   return {
     move(input) {
       if (paintTo(input)) editor.requestRender();
-      last = input;
     },
     end: () => editor.endStroke(),
   };
@@ -139,12 +142,23 @@ function shape(
   return { move: redraw, end: () => editor.endStroke() };
 }
 
-/** Drags the brush from `from` to `to`. Returns whether any pixel changed. */
-function paintLine(session: PixelEditSession, mask: BrushMask, from: Point, to: Point, index: number): boolean {
+/**
+ * Drags the brush from `from` to `to` (`continued`: a stroke's next segment,
+ * already painted at `from`). Returns whether any pixel changed.
+ */
+function paintLine(session: PixelEditSession, mask: BrushMask, from: Point, to: Point, index: number, continued = false): boolean {
   let changed = false;
-  brushLine(mask, from.x, from.y, to.x, to.y, (x, y) => {
-    changed = session.setPixel(x, y, index) || changed;
-  });
+  brushLine(
+    mask,
+    from.x,
+    from.y,
+    to.x,
+    to.y,
+    (x, y) => {
+      changed = session.setPixel(x, y, index) || changed;
+    },
+    continued,
+  );
   return changed;
 }
 
@@ -228,12 +242,22 @@ function extrusionStroke(
 ): ToolGesture {
   const session = editor.beginStroke(label);
   const mask = brushMask(editor.brush);
-  let last: Point = start;
+  /** Where the stroke has painted up to; null before the first point. */
+  let last: Point | null = null;
   const paintTo = (to: Point) => {
+    const from = last ?? to;
     let changed = false;
-    brushLine(mask, last.x, last.y, to.x, to.y, (x, y) => {
-      changed = session.updateExtrusion(x, y, (extrusion) => update(extrusion, x, y)) || changed;
-    });
+    brushLine(
+      mask,
+      from.x,
+      from.y,
+      to.x,
+      to.y,
+      (x, y) => {
+        changed = session.updateExtrusion(x, y, (extrusion) => update(extrusion, x, y)) || changed;
+      },
+      last !== null,
+    );
     last = to;
     if (changed) editor.requestRender();
   };

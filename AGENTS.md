@@ -393,10 +393,12 @@ storage without updating this section and the palette-swap design.
 - The editor edits one side at a time (`Editor.facing`, `setFacing`; keys
   1–6 and the perspective bar). The canvas shows that side's layers only,
   plus the guide: the model of the other sides' layers as its camera sees
-  it (`otherSidesView`), faint under them. The guide is rebuilt only when
-  other sides may have changed (`guideStamp`: recorded edits, visibility,
-  opacity), not on every stroke. `Editor.plane` and `extent` are the side's
-  size and how far its boxes reach.
+  it (`otherSidesView`), faint under them. It's cached for the side it was
+  built for and dropped only when a change could show in it: a recorded edit
+  to another side's layers, the palette or the document
+  (`changesOtherSides`), another side's visibility, or its opacity crossing
+  0. Edits to the side's own layers keep it. `Editor.plane` and `extent` are
+  the side's size and how far its boxes reach.
 - Everything 2D works per side: plane-sized layers, the side's selection
   (`doc.selections[facing]`), layer lists and moves (the next layer of the
   same side, `neighborLayerIndex`), merges, copy/paste, image import and
@@ -589,6 +591,8 @@ storage without updating this section and the palette-swap design.
     corners from 4 on.
   - `brushLine` stamps the full footprint at the first point and only its
     `edge` pixels after that: a one-pixel step can't reach anything else.
+    With `continued` (a stroke's next segment, or a rectangle's next side)
+    it skips the first point too, which the last segment already covered.
     This keeps large brushes fast. Tests check it against stamping
     everywhere.
   - `brushRect` traces the outline with the brush (four `brushLine`s), and
@@ -818,14 +822,14 @@ storage without updating this section and the palette-swap design.
     against the copy, so neither costs more than the stroke's extent.
   - `setAll` writes a whole layer's worth at once. For edits built outside
     a session, `pixelEditFromArray` diffs a whole-layer array (and
-    optionally extrusions), which is much faster than
-    `pixelEditFromValues`' map for big changes.
+    optionally extrusions): clears, palette remaps, merges and layer moves
+    use it, since a map of a million changed pixels is slow to build and
+    sort.
   - `updateExtrusion` changes a painted pixel's extrusion (through a
     function of the current one, so tools keep what they don't paint),
     `setCell` a pixel's
     index and extrusion together. `pixelEditFromCells` is the map version
-    for cells (floats and pastes use it); `pixelEditFromValues` sets indices
-    only.
+    for cells (floats and pastes use it).
 - Strokes that change nothing (or end up back at the original values) don't
   create entries. Undo/redo are ignored while a stroke is in progress.
 

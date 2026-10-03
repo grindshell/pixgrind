@@ -227,29 +227,33 @@ export function editedSide(doc: PixelDocument, edit: Edit): { facing: Facing; la
   }
 }
 
+/**
+ * Whether an edit (already applied or undone) may have changed the model
+ * outside `facing`'s own layers: other sides' layers, the palette (which
+ * colors show) or the whole document. Selections and floats change no
+ * pixels. For caches of the other sides' model, such as the canvas's guide.
+ */
+export function changesOtherSides(doc: PixelDocument, edit: Edit, facing: Facing): boolean {
+  switch (edit.kind) {
+    case 'selection':
+    case 'floating':
+      return false;
+    case 'palette':
+    case 'document':
+      return true;
+    case 'batch':
+      return edit.edits.some((part) => changesOtherSides(doc, part, facing));
+    default:
+      // A layer that can't be found counts as changed.
+      return editedSide(doc, edit)?.facing !== facing;
+  }
+}
+
 /** Groups edits into one history entry: null if none, the edit itself if one, else a batch. */
 export function combineEdits(label: string, edits: ReadonlyArray<Edit | null>): Edit | null {
   const present = edits.filter((edit): edit is Edit => edit !== null);
   if (present.length <= 1) return present[0] ?? null;
   return { kind: 'batch', label, edits: present };
-}
-
-/**
- * A pixel edit that sets each offset in `values` to its palette index,
- * keeping only the pixels that actually change. Extrusions stay as they are.
- * Built unapplied. Null when nothing changes.
- */
-export function pixelEditFromValues(layer: Layer, label: string, values: ReadonlyMap<number, number>): PixelEdit | null {
-  const changed = [...values].filter(([offset, value]) => layer.pixels[offset] !== value).sort(([a], [b]) => a - b);
-  if (changed.length === 0) return null;
-  return {
-    kind: 'pixels',
-    label,
-    layerId: layer.id,
-    offsets: Uint32Array.from(changed, ([offset]) => offset),
-    before: Uint8Array.from(changed, ([offset]) => layer.pixels[offset]),
-    after: Uint8Array.from(changed, ([, value]) => value),
-  };
 }
 
 /**

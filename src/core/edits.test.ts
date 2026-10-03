@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   applyEdit,
   beginPixelEdit,
+  changesOtherSides,
   combineEdits,
   editedSide,
   pixelEditFromArray,
   pixelEditFromCells,
-  pixelEditFromValues,
   type Edit,
   type PixelEdit,
 } from './edits.ts';
@@ -170,21 +170,6 @@ describe('applyEdit', () => {
   });
 });
 
-describe('pixelEditFromValues', () => {
-  it('keeps only changed pixels, sorted, with current values as before', () => {
-    const doc = docWithPixel(1, 0, 2);
-    const edit = pixelEditFromValues(doc.layers[0], 'Set', new Map([[5, 3], [1, 2], [0, 1]]));
-    expect(Array.from(edit!.offsets)).toEqual([0, 5]);
-    expect(Array.from(edit!.before)).toEqual([0, 0]);
-    expect(Array.from(edit!.after)).toEqual([1, 3]);
-  });
-
-  it('is null when nothing changes', () => {
-    const doc = docWithPixel(0, 0, 1);
-    expect(pixelEditFromValues(doc.layers[0], 'Set', new Map([[0, 1]]))).toBeNull();
-  });
-});
-
 describe('pixelEditFromArray', () => {
   it('keeps only the pixels that differ from the layer', () => {
     const doc = docWithPixel(1, 0, 2);
@@ -306,6 +291,27 @@ describe('editedSide', () => {
     expect(editedSide(doc, combineEdits('Pencil', [drop, pixels])!)).toEqual({ facing: 'top', layerId: top.id });
     expect(editedSide(doc, drop)).toEqual({ facing: 'front' });
     expect(editedSide(doc, { kind: 'palette', label: 'Color', before: palette, after: palette })).toBeNull();
+  });
+});
+
+describe('changesOtherSides', () => {
+  it('is true for other sides’ layers, the palette and the document, not the side’s own or selections', () => {
+    const doc = createDocument(2, 2, palette);
+    const top = doc.layers.find((layer) => layer.facing === 'top')!;
+    const stroke = beginPixelEdit(top, 'Pencil');
+    stroke.setPixel(0, 0, 1);
+    const pixels = stroke.finish()!;
+    expect(changesOtherSides(doc, pixels, 'top')).toBe(false);
+    expect(changesOtherSides(doc, pixels, 'front')).toBe(true);
+    const select = selectionEdit(doc, 'front', rectMask({ x: 0, y: 0, width: 1, height: 1 }), 'Select')!;
+    expect(changesOtherSides(doc, select, 'top')).toBe(false);
+    expect(changesOtherSides(doc, combineEdits('Move', [select, pixels])!, 'front')).toBe(true);
+    expect(changesOtherSides(doc, { kind: 'palette', label: 'Color', before: palette, after: palette }, 'top')).toBe(true);
+    // A removed layer still counts for its side.
+    const removed = { kind: 'layer-remove', label: 'Delete', layer: top, index: 0 } as const;
+    expect(changesOtherSides(doc, removed, 'top')).toBe(false);
+    doc.layers = doc.layers.filter((layer) => layer !== top);
+    expect(changesOtherSides(doc, removed, 'left')).toBe(true);
   });
 });
 

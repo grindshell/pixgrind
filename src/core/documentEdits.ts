@@ -50,14 +50,18 @@ export function importImageLayerEdit(
   if (!Number.isInteger(index) || index < 0 || index > doc.layers.length) {
     throw new RangeError(`Invalid layer position ${index}`);
   }
-  const indices = indexImageToPalette(image.data, doc.palette);
   const plane = planeSize(doc, facing);
   const layer = createLayer(plane.width, plane.height, name, facing);
   const width = Math.min(image.width, plane.width);
   const height = Math.min(image.height, plane.height);
+  // Crop before matching colors: a photo can be far bigger than the side.
+  const cropped = new Uint8ClampedArray(width * height * 4);
   for (let y = 0; y < height; y++) {
-    layer.pixels.set(indices.subarray(y * image.width, y * image.width + width), y * plane.width);
+    const row = y * image.width * 4;
+    cropped.set(image.data.subarray(row, row + width * 4), y * width * 4);
   }
+  const indices = indexImageToPalette(cropped, doc.palette);
+  for (let y = 0; y < height; y++) layer.pixels.set(indices.subarray(y * width, (y + 1) * width), y * plane.width);
   return { kind: 'layer-add', label: 'Add image as layer', layer, index };
 }
 
