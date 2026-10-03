@@ -22,8 +22,11 @@ export function checkExportSize(width: number, height: number): void {
  * Decodes an image file to RGBA without color-space conversion. Opaque and
  * fully transparent pixels come out exact; translucent ones may be off by
  * rounding, because canvases store colors premultiplied by alpha.
+ * `checkSize` gets the image's size before its pixels are read and throws to
+ * refuse it, so an image too large to use fails fast instead of first taking
+ * its full size in memory.
  */
-export async function decodeImage(file: Blob): Promise<RgbaImage> {
+export async function decodeImage(file: Blob, checkSize?: (width: number, height: number) => void): Promise<RgbaImage> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
@@ -31,6 +34,7 @@ export async function decodeImage(file: Blob): Promise<RgbaImage> {
     throw new Error('The file is not an image this browser can read');
   }
   try {
+    checkSize?.(bitmap.width, bitmap.height);
     const ctx = createContext(bitmap.width, bitmap.height, true);
     ctx.drawImage(bitmap, 0, 0);
     const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);

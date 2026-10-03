@@ -1,4 +1,5 @@
 import {
+  checkClipSize,
   clipFromImage,
   clipImage,
   clipMatchesImage,
@@ -9,6 +10,7 @@ import {
 } from '../core/clipboard.ts';
 import type { RgbaImage } from '../core/image.ts';
 import { decodeImage, encodeImage } from '../io/imageCodec.ts';
+import { BUSY_MESSAGE } from './commands.ts';
 import { isTextEntry } from './dom.ts';
 import type { Editor } from './editor.ts';
 
@@ -60,7 +62,7 @@ export function attachClipboard(target: Document, editor: Editor, report: (messa
   const paste = async (file: File | undefined) => {
     let source = clip;
     if (file && !(clip && clipIsNewest)) {
-      const image = await decodeImage(file);
+      const image = await decodeImage(file, checkClipSize);
       // Our own copy comes back through PNG slightly changed if it has translucent colors.
       if (!clip || !clipMatchesImage(clip, image)) source = clipFromImage(image, editor.doc.palette, editor.plane);
     }
@@ -70,7 +72,9 @@ export function attachClipboard(target: Document, editor: Editor, report: (messa
       report("Can't paste onto a hidden layer.");
       return;
     }
+    // Decoding takes a moment, in which a gesture may have started.
     if (editor.perform(pasteEdit(editor.doc, layer, source))) editor.setTool('move');
+    else report(BUSY_MESSAGE);
   };
   const runPaste = (file: File | undefined) => {
     paste(file).catch((error: unknown) => report(error instanceof Error ? error.message : String(error)));

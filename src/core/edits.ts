@@ -1,4 +1,4 @@
-import { cellExtrusion, cellIndex, packCell, type Cell, type Extrusion } from './extrusion.ts';
+import { cellExtrusion, cellIndex, DEFAULT_EXTRUSION, packCell, type Cell, type Extrusion } from './extrusion.ts';
 import { planeSize, type Facing, type Volume } from './facing.ts';
 import { inLayer, type Layer } from './layer.ts';
 import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
@@ -498,7 +498,8 @@ export interface PixelEditSession {
   /**
    * Sets every pixel to `pixels` (laid out like the layer's), and painted
    * ones' extrusions to `extrusion` when given, as `setCell` would one by
-   * one, only faster. For whole-layer previews (moving a layer).
+   * one, only faster. Without `extrusion`, newly painted pixels get the
+   * default, as with `setPixel`. For whole-layer previews (moving a layer).
    */
   setAll(pixels: Uint8Array, extrusion?: Uint32Array): void;
   /** Restores every pixel written so far to its original value. Used to redraw shape previews. */
@@ -567,11 +568,20 @@ export function beginPixelEdit(layer: Layer, label: string, clip: Mask | null = 
       const { width } = layer;
       for (let offset = 0; offset < pixels.length; offset++) {
         const index = pixels[offset];
-        const extrudes = extrusion !== undefined && index !== TRANSPARENT && layer.extrusion[offset] !== extrusion[offset];
-        if (layer.pixels[offset] === index && !extrudes) continue;
+        const current = layer.extrusion[offset];
+        // Transparent pixels keep theirs: it means nothing there.
+        const next =
+          index === TRANSPARENT
+            ? current
+            : extrusion
+              ? extrusion[offset]
+              : layer.pixels[offset] === TRANSPARENT
+                ? DEFAULT_EXTRUSION
+                : current;
+        if (layer.pixels[offset] === index && current === next) continue;
         if (clip && !maskHas(clip, offset % width, Math.floor(offset / width))) continue;
         layer.pixels[offset] = index;
-        if (extrudes) layer.extrusion[offset] = extrusion[offset];
+        layer.extrusion[offset] = next;
         wrote(offset);
       }
     },

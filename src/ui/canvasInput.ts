@@ -1,4 +1,5 @@
 import { screenToDocument, stepZoom, zoomAt } from '../render/viewport.ts';
+import { commitTextEntry } from './dom.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 import { getTool, type Tool, type ToolGesture, type ToolInput } from './tools.ts';
 
@@ -41,9 +42,12 @@ export function attachCanvasInput(canvas: HTMLCanvasElement, editor: Editor): vo
       e.preventDefault();
       gesture = { kind: 'pan', pointerId: e.pointerId, lastClientX: e.clientX, lastClientY: e.clientY };
     } else if (e.button === BUTTON_PRIMARY || e.button === BUTTON_SECONDARY) {
+      // Another view's gesture (a side view stroke, with a second finger) has the document until it ends.
+      if (editor.busy) return;
       const tool = getTool(e.altKey ? 'eyedropper' : editor.tool);
       // Painting on a hidden layer would change pixels the user can't see.
       if (tool.paints && !editor.activeLayer.visible) return;
+      commitTextEntry();
       const input = toolInput(e);
       const slot: ColorSlot = e.button === BUTTON_SECONDARY ? 'secondary' : 'primary';
       editor.setGestureActive(true);

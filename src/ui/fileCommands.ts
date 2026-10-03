@@ -3,7 +3,7 @@ import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, type ImageCol
 import { planeSize, type Facing } from '../core/facing.ts';
 import { documentImage, flattenImage, upscaleImage } from '../core/image.ts';
 import { buildMesh, buildVoxelModel } from '../core/model.ts';
-import type { PixelDocument } from '../core/pixelDocument.ts';
+import { checkDocumentSize, type PixelDocument } from '../core/pixelDocument.ts';
 import { downloadBlob, fileBaseName, formatFileSize, safeFileName } from '../io/files.ts';
 import { GLB_EXTENSION, meshToGlb } from '../io/glb.ts';
 import { checkExportSize, decodeImage, encodeImage, IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
@@ -26,7 +26,7 @@ export function openFile(editor: Editor, file: File, mode: ImageColorMode): Prom
 
 /** Replaces the document with an image file (undoable). */
 export async function openImageFile(editor: Editor, file: File, mode: ImageColorMode): Promise<string> {
-  const image = await decodeImage(file);
+  const image = await decodeImage(file, (width, height) => checkDocumentSize(width, height));
   const name = fileBaseName(file.name);
   if (!editor.perform(openImageEdit(editor.doc, image, name, mode))) throw new Error(BUSY_MESSAGE);
   const colors = editor.doc.palette.colors.length;
@@ -84,8 +84,10 @@ export function projectFileName(doc: PixelDocument): string {
   return `${safeFileName(doc.name)}.${PROJECT_EXTENSION}`;
 }
 
-/** Downloads the document as a project file and marks it saved. */
+/** Downloads the document as a project file and marks it saved. Refused mid-gesture. */
 export async function saveProject(editor: Editor, { includeReference }: SaveOptions): Promise<string> {
+  // A half-done stroke or move isn't any state in history, so it can't be marked saved.
+  if (editor.busy) throw new Error(BUSY_MESSAGE);
   // The document is copied synchronously at the start of serializing; it is saved as of now.
   const position = editor.history.position;
   const reference = includeReference ? editor.reference : null;

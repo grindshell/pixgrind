@@ -243,6 +243,19 @@ describe('extrusion edits', () => {
     expect([layer.pixels[0], layer.extrusion[0]]).toEqual([0, DEEP]);
   });
 
+  it('setAll without extrusions gives newly painted pixels the default', () => {
+    const doc = docWithPixel(1, 0, 1);
+    const [layer] = doc.layers;
+    layer.extrusion[0] = DEEP; // left by an erased pixel
+    layer.extrusion[1] = DEEP; // a painted pixel's own
+    const session = beginPixelEdit(layer, 'Move');
+    session.setAll(Uint8Array.from({ length: 16 }, (_, i) => (i < 2 ? 2 : 0)));
+    expect([layer.extrusion[0], layer.extrusion[1]]).toEqual([DEFAULT_EXTRUSION, DEEP]);
+    const edit = session.finish()!;
+    applyEdit(doc, edit, 'undo');
+    expect([layer.pixels[0], layer.extrusion[0], layer.pixels[1]]).toEqual([0, DEEP, 1]);
+  });
+
   it('ignores extrusion differences on transparent pixels', () => {
     const doc = createDocument(2, 1, palette);
     const [layer] = doc.layers;

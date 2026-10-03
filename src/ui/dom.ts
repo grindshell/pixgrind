@@ -118,6 +118,17 @@ export function isTextEntry(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement && !NON_TEXT_INPUTS.has(target.type);
 }
 
+/**
+ * Takes focus from a text field so its change handlers commit what was typed
+ * (a layer name, a hex color) now. Pointer gestures call this before they
+ * start: otherwise the field would blur only after the press, when the
+ * editor is already busy and refuses the edit.
+ */
+export function commitTextEntry(): void {
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && isTextEntry(focused)) focused.blur();
+}
+
 /** Whether a focused control uses the arrow keys itself (sliders, radio buttons). */
 export function usesArrowKeys(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement && (target.type === 'range' || target.type === 'radio');

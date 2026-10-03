@@ -12,7 +12,7 @@ import {
   type PixelEditSession,
 } from '../core/edits.ts';
 import { MAX_DEPTH, MAX_OFFSET, MIN_DEPTH, type Shape } from '../core/extrusion.ts';
-import { planeExtent, planeSize, type Facing } from '../core/facing.ts';
+import { FACINGS, planeExtent, planeSize, type Facing } from '../core/facing.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import type { Mask, SelectionMode } from '../core/mask.ts';
@@ -613,7 +613,7 @@ export class Editor {
     this.documentRevision++;
     this.guideStamp++;
     this.fitIfResized();
-    this.syncActiveLayer();
+    this.syncActiveLayers();
     // The paint colors follow their colors when they're renumbered, and stay
     // valid when the palette shrinks.
     const last = this.doc.palette.colors.length;
@@ -623,15 +623,24 @@ export class Editor {
     this.notify();
   }
 
-  /** Keeps the active layer valid after layers are added, removed, or moved. */
-  private syncActiveLayer(): void {
-    const layers = facingLayers(this.doc, this.facing);
-    let index = layers.findIndex((layer) => layer.id === this.activeLayerIds[this.facing]);
-    if (index < 0) {
-      index = Math.min(this.activeIndexHints[this.facing] ?? layers.length - 1, layers.length - 1);
-      this.activeLayerIds[this.facing] = layers[index].id;
+  /**
+   * Keeps each side's active layer valid after layers are added, removed, or
+   * moved, on any side: an undo can remove another side's active layer, and
+   * its stale position must not pick a different layer later. Sides with no
+   * chosen layer keep the topmost (see `activeLayer`).
+   */
+  private syncActiveLayers(): void {
+    for (const facing of FACINGS) {
+      const id = this.activeLayerIds[facing];
+      if (id === undefined) continue;
+      const layers = facingLayers(this.doc, facing);
+      let index = layers.findIndex((layer) => layer.id === id);
+      if (index < 0) {
+        index = Math.min(this.activeIndexHints[facing] ?? layers.length - 1, layers.length - 1);
+        this.activeLayerIds[facing] = layers[index].id;
+      }
+      this.activeIndexHints[facing] = index;
     }
-    this.activeIndexHints[this.facing] = index;
   }
 
   private notify(): void {

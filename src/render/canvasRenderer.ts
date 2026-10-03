@@ -6,7 +6,7 @@ import { planeSize, type Facing } from '../core/facing.ts';
 import type { Layer } from '../core/layer.ts';
 import { maskOutline, type Mask, type OutlineRun } from '../core/mask.ts';
 import type { IndexImage } from '../core/model.ts';
-import { colorForIndex, TRANSPARENT, type Palette } from '../core/palette.ts';
+import { clonePalette, colorForIndex, palettesEqual, TRANSPARENT, type Palette } from '../core/palette.ts';
 import { findLayer, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
 import type { ReferenceImage } from './referenceImage.ts';
@@ -209,10 +209,14 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  /** The float's pixels as an image, rebuilt only when its pixels or the palette change (moves share pixels). */
+  /**
+   * The float's pixels as an image, rebuilt only when its pixels or the
+   * palette's colors change (moves share pixels). Compared by content, since
+   * color previews change the palette in place.
+   */
   private floatingCanvas(floating: FloatingPixels, palette: Palette): HTMLCanvasElement {
     const cached = this.floatingImage;
-    if (cached?.pixels === floating.pixels && cached.palette === palette) return cached.canvas;
+    if (cached?.pixels === floating.pixels && palettesEqual(cached.palette, palette)) return cached.canvas;
     const { width, height } = floating.rect;
     const canvas = cached?.canvas ?? document.createElement('canvas');
     canvas.width = width;
@@ -224,7 +228,7 @@ export class CanvasRenderer {
       image.data.set([red(color), green(color), blue(color), alpha(color)], i * 4);
     });
     ctx.putImageData(image, 0, 0);
-    this.floatingImage = { pixels: floating.pixels, palette, canvas };
+    this.floatingImage = { pixels: floating.pixels, palette: clonePalette(palette), canvas };
     return canvas;
   }
 

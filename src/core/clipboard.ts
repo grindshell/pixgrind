@@ -59,11 +59,16 @@ function copiedArea(doc: PixelDocument, layer: Layer): Mask {
   return doc.selections[layer.facing] ?? rectMask({ x: 0, y: 0, width: layer.width, height: layer.height });
 }
 
+/** Throws a RangeError unless an image `width`×`height` is small enough to paste. */
+export function checkClipSize(width: number, height: number): void {
+  if (width > MAX_DOCUMENT_SIZE || height > MAX_DOCUMENT_SIZE) {
+    throw new RangeError(`${width}×${height} is too large to paste (max ${MAX_DOCUMENT_SIZE} per side)`);
+  }
+}
+
 /** An image (e.g. from another app) as a clip, in nearest palette colors, centered on a plane `size`. */
 export function clipFromImage(image: RgbaImage, palette: Palette, size: Size): PixelClip {
-  if (image.width > MAX_DOCUMENT_SIZE || image.height > MAX_DOCUMENT_SIZE) {
-    throw new RangeError(`${image.width}×${image.height} is too large to paste (max ${MAX_DOCUMENT_SIZE} per side)`);
-  }
+  checkClipSize(image.width, image.height);
   return {
     rect: centeredRect(size, image.width, image.height),
     bits: null,

@@ -420,7 +420,10 @@ storage without updating this section and the palette-swap design.
   outlives the current call (edits, editor state, UI callbacks).
 - The editor tracks the active layer per side by id (`Editor.selectLayer`,
   which switches to the layer's side). If an edit or undo removes it, the
-  editor falls back to the side's layer at its old position.
+  editor falls back to the side's layer at its old position. This runs for
+  every side after each change (`syncActiveLayers`), since an undo can
+  remove another side's active layer; sides with no chosen layer use their
+  topmost.
 - Draw operations target the editor's active layer only, and are blocked
   while that layer is hidden (the stage shows a not-allowed cursor).
 - Merge down (`mergeDownEdit`) requires both layers visible and at 100%
@@ -520,6 +523,11 @@ storage without updating this section and the palette-swap design.
   new Shift state, so line snapping, squares and axis-locked moves update
   without moving the pointer. Tools must therefore handle a `move` to the same
   pixel; all current ones simply recompute.
+- Before a canvas or side view gesture starts, `commitTextEntry` blurs a
+  focused text field. Fields that commit on blur (layer rename, hex color,
+  model depth) would otherwise blur only after the press made the editor
+  busy, and their edit would be refused. Neither view starts a gesture while
+  the editor is busy with the other's (two fingers on a touch screen).
 - Tools live in `ui/tools.ts`, one `Tool` object each:
   - `begin(editor, input, index, slot)` returns a `ToolGesture` with
     `move`/`end`. `slot` is the pressed button's color (`primary` for the
@@ -789,7 +797,9 @@ storage without updating this section and the palette-swap design.
     combine it with other edits (Move = pixels + selection).
 - While a pointer gesture or stroke is active (`editor.busy`), undo, redo and
   `perform` are ignored. Without this, an edit made mid-gesture would
-  interleave with the gesture's own edit.
+  interleave with the gesture's own edit. Saving is refused too: a
+  half-done stroke isn't a history position to mark saved. Commands that
+  fail this way say so (`BUSY_MESSAGE`).
 - `core/history.ts` `History` holds the undo/redo stacks (default limit 256).
   `push` takes an edit that is already applied and clears redo. If
   `applyEdit` throws, the stacks are left unchanged.
@@ -1005,6 +1015,9 @@ storage without updating this section and the palette-swap design.
   directly.
 - Decode: `createImageBitmap` with `colorSpaceConversion: 'none'` and
   `premultiplyAlpha: 'none'`, so colors come out exactly as stored.
+  `decodeImage`'s `checkSize` sees the size before the pixels are read, so
+  opening and pasting refuse images too large for a document before they
+  take memory.
 - **Open image** (`openImageEdit`) replaces the whole document through a
   `document` edit (a before/after `DocumentState`), so it is undoable and
   nothing is lost without a prompt. Two color modes:

@@ -7,7 +7,7 @@ import { cellAt } from '../core/pixelDocument.ts';
 import { plotLine } from '../core/raster.ts';
 import { SideRenderer, type SideCell } from '../render/sideRenderer.ts';
 import { clampZoom, stepZoom, zoomAt } from '../render/viewport.ts';
-import { el, iconButton } from './dom.ts';
+import { commitTextEntry, el, iconButton } from './dom.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 import { addToBar, createPaneFrame } from './paneFrame.ts';
 import { facingName } from './perspectiveBar.ts';
@@ -142,6 +142,7 @@ export function createSidePane(editor: Editor): HTMLElement {
       }
       // Painting on a hidden layer would change pixels the user can't see.
       if (!editor.activeLayer.visible || editor.busy) return;
+      commitTextEntry();
       const index = editor.colorIndex(slot);
       const session = editor.beginStroke('Side view');
       if (paintCell(session, at, index)) editor.requestRender();
