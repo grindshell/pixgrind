@@ -99,7 +99,9 @@ function resizedLayer(layer: Layer, change: number, depth: number): Layer {
         const end = Math.max(start + 1, extrusionEnd(extrusion) + change);
         return fitExtrusion(withBox(extrusion, start, end - start), depth);
       });
-    // Rows or columns run front to back (top, left) or back to front (bottom, right).
+    // The top's rows and the left side's columns run back to front, so the
+    // front is at their end. The bottom's rows and the right side's columns
+    // run front to back, so they shift by the change.
     case 'top':
       return cropped(layer, layer.width, depth, 0, 0);
     case 'bottom':

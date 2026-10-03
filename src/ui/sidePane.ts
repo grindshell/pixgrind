@@ -64,7 +64,17 @@ export function createSidePane(editor: Editor): HTMLElement {
     draw();
   });
 
+  /** A redraw requested by input, pending for the next animation frame (0 for none). */
+  let queuedDraw = 0;
+  /** Redraws on the next animation frame: input handlers call this, so they redraw at most once a frame. */
+  const requestDraw = () => {
+    queuedDraw ||= requestAnimationFrame(draw);
+  };
+
   const draw = () => {
+    // A redraw now makes a pending one unneeded.
+    cancelAnimationFrame(queuedDraw);
+    queuedDraw = 0;
     if (!renderer || !editor.panes.side) return;
     if (!model) {
       modelVersion = editor.contentVersion;
@@ -193,7 +203,7 @@ export function createSidePane(editor: Editor): HTMLElement {
     if (at.s !== hover?.s || at.v !== hover.v) {
       hover = at;
       showWhere();
-      if (!gesture) draw();
+      if (!gesture) requestDraw();
     }
   });
 
@@ -210,7 +220,7 @@ export function createSidePane(editor: Editor): HTMLElement {
     if (gesture) return;
     hover = null;
     showWhere();
-    draw();
+    requestDraw();
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
