@@ -1,6 +1,6 @@
 import { combineEdits } from '../core/edits.ts';
+import { planeRect } from '../core/facing.ts';
 import { rectMask } from '../core/mask.ts';
-import { documentRect } from '../core/pixelDocument.ts';
 import {
   clearSelectionEdit,
   deleteFloatingEdit,
@@ -20,19 +20,23 @@ import type { Editor } from './editor.ts';
 /** Shown when `Editor.perform` refuses an edit because a gesture is in progress. */
 export const BUSY_MESSAGE = 'Finish drawing first, then try again.';
 
+/** Selects the whole side being edited. */
 export function selectAll(editor: Editor): void {
-  editor.perform(selectionEdit(editor.doc, rectMask(documentRect(editor.doc)), 'Select all'));
+  const { doc, facing } = editor;
+  editor.perform(selectionEdit(doc, facing, rectMask(planeRect(doc, facing)), 'Select all'));
 }
 
-/** Selects every unselected pixel instead, dropping a floating selection where it is. */
+/** Selects every unselected pixel of the side being edited instead, dropping a floating selection where it is. */
 export function invertSelection(editor: Editor): void {
-  editor.perform(invertSelectionEdit(editor.doc));
+  editor.perform(invertSelectionEdit(editor.doc, editor.facing));
 }
 
-/** Deselects, dropping a floating selection where it is. */
+/** Deselects on the side being edited, dropping a floating selection where it is. */
 export function deselect(editor: Editor): void {
-  const { doc } = editor;
-  editor.perform(combineEdits('Deselect', [dropFloatingEdit(doc, 'Deselect'), selectionEdit(doc, null, 'Deselect')]));
+  const { doc, facing } = editor;
+  editor.perform(
+    combineEdits('Deselect', [dropFloatingEdit(doc, 'Deselect'), selectionEdit(doc, facing, null, 'Deselect')]),
+  );
 }
 
 /** Drops a floating selection where it is, keeping the selection. */

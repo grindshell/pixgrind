@@ -22,9 +22,13 @@ const BLUE = 0x0000ffff;
 const DARK_RED = 0x800000ff;
 const LIGHT_BLUE = 0x8080ffff;
 
-/** A 4×1 document with the given palette and pixel indices, plus an optional second layer. */
+/**
+ * A 4×1 document with the given palette and pixel indices, plus an optional
+ * second layer: front layers only, which is all palette edits need.
+ */
 function docWith(colors: number[], pixels: number[], topPixels?: number[]): PixelDocument {
   const doc = createDocument(pixels.length, 1, createPalette('Original', colors));
+  doc.layers = doc.layers.filter((layer) => layer.facing === 'front');
   doc.layers[0].pixels.set(pixels);
   if (topPixels) {
     const top = createLayer(pixels.length, 1, 'Top');
@@ -181,7 +185,7 @@ describe('palette swap (keep indices)', () => {
 
 describe('remap to palette (match colors)', () => {
   function appearance(doc: PixelDocument): number[] {
-    return Array.from(compositeRgba(doc));
+    return Array.from(compositeRgba(doc, 'front'));
   }
 
   it('keeps the image looking the same when the new palette is a reordering', () => {

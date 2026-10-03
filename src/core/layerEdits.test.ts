@@ -6,10 +6,12 @@ import { createLayer } from './layer.ts';
 import {
   addLayerEdit,
   canMergeDown,
+  canRemoveLayer,
   duplicateLayerEdit,
   layerPropsEdit,
   mergeDownEdit,
   moveLayerEdit,
+  neighborLayerIndex,
   nextLayerName,
   removeLayerEdit,
 } from './layerEdits.ts';
@@ -25,10 +27,14 @@ function perform(doc: PixelDocument, history: History, edit: Edit | null): void 
   history.push(edit);
 }
 
-/** A 2×1 document with `count` layers named "Layer 1".."Layer N", bottom to top. */
+/**
+ * A 2×1 document with `count` front layers named "Layer 1".."Layer N", bottom
+ * to top, and none on other sides (which these edits don't mind).
+ */
 function docWithLayers(count: number): PixelDocument {
   const doc = createDocument(2, 1, palette);
-  for (let i = 1; i < count; i++) applyEdit(doc, addLayerEdit(doc), 'redo');
+  doc.layers = doc.layers.filter((layer) => layer.facing === 'front');
+  for (let i = 1; i < count; i++) applyEdit(doc, addLayerEdit(doc, 'front'), 'redo');
   return doc;
 }
 
@@ -37,10 +43,10 @@ const names = (doc: PixelDocument) => doc.layers.map((l) => l.name);
 describe('nextLayerName', () => {
   it('continues after the highest default name', () => {
     const doc = docWithLayers(1);
-    expect(nextLayerName(doc)).toBe('Layer 2');
+    expect(nextLayerName(doc, 'front')).toBe('Layer 2');
     doc.layers[0].name = 'Layer 7';
     doc.layers.push(createLayer(2, 1, 'Sketch'));
-    expect(nextLayerName(doc)).toBe('Layer 8');
+    expect(nextLayerName(doc, 'front')).toBe('Layer 8');
   });
 });
 
@@ -48,7 +54,7 @@ describe('add / duplicate / remove', () => {
   it('adds an empty layer at a position, undo removes it', () => {
     const doc = docWithLayers(2);
     const history = new History();
-    perform(doc, history, addLayerEdit(doc, 1));
+    perform(doc, history, addLayerEdit(doc, 'front', 1));
     expect(names(doc)).toEqual(['Layer 1', 'Layer 3', 'Layer 2']);
     expect(doc.layers[1].pixels.every((p) => p === 0)).toBe(true);
     history.undo(doc);
@@ -59,14 +65,14 @@ describe('add / duplicate / remove', () => {
 
   it('rejects positions out of range', () => {
     const doc = docWithLayers(1);
-    expect(() => addLayerEdit(doc, 2)).toThrow(RangeError);
-    expect(() => addLayerEdit(doc, -1)).toThrow(RangeError);
+    expect(() => addLayerEdit(doc, 'front', 2)).toThrow(RangeError);
+    expect(() => addLayerEdit(doc, 'front', -1)).toThrow(RangeError);
   });
 
   it('duplicates above the source with independent pixels and a new id', () => {
     const doc = docWithLayers(1);
     const [source] = doc.layers;
-    setPixel(doc, source, 0, 0, 2);
+    setPixel(source, 0, 0, 2);
     source.extrusion[0] = packExtrusion(1, 4);
     source.opacity = 0.5;
     applyEdit(doc, duplicateLayerEdit(doc, source.id), 'redo');
@@ -74,11 +80,11 @@ describe('add / duplicate / remove', () => {
     expect(copy.name).toBe('Layer 1 copy');
     expect(copy.id).not.toBe(source.id);
     expect(copy.opacity).toBe(0.5);
-    expect(getPixel(doc, copy, 0, 0)).toBe(2);
+    expect(getPixel(copy, 0, 0)).toBe(2);
     expect(copy.extrusion[0]).toBe(packExtrusion(1, 4));
-    setPixel(doc, copy, 0, 0, 3);
+    setPixel(copy, 0, 0, 3);
     copy.extrusion[0] = DEFAULT_EXTRUSION;
-    expect(getPixel(doc, source, 0, 0)).toBe(2);
+    expect(getPixel(source, 0, 0)).toBe(2);
     expect(source.extrusion[0]).toBe(packExtrusion(1, 4));
   });
 
@@ -101,19 +107,19 @@ describe('add / duplicate / remove', () => {
     const doc = docWithLayers(2);
     const history = new History();
     const top = doc.layers[1];
-    const stroke = beginPixelEdit(doc, top, 'Pencil');
+    const stroke = beginPixelEdit(top, 'Pencil');
     stroke.setPixel(1, 0, 1);
     history.push(stroke.finish()!);
     perform(doc, history, removeLayerEdit(doc, top.id));
 
     history.undo(doc); // restores the layer
     history.undo(doc); // undoes the stroke on it
-    expect(getPixel(doc, top, 1, 0)).toBe(0);
+    expect(getPixel(top, 1, 0)).toBe(0);
     history.redo(doc);
     history.redo(doc);
     expect(names(doc)).toEqual(['Layer 1']);
     history.undo(doc);
-    expect(getPixel(doc, doc.layers[1], 1, 0)).toBe(1);
+    expect(getPixel(doc.layers[1], 1, 0)).toBe(1);
   });
 });
 
@@ -200,9 +206,9 @@ describe('merge down', () => {
   function twoLayers(): PixelDocument {
     const doc = docWithLayers(2);
     const [lower, upper] = doc.layers;
-    setPixel(doc, lower, 0, 0, 1);
-    setPixel(doc, lower, 1, 0, 1);
-    setPixel(doc, upper, 1, 0, 2);
+    setPixel(lower, 0, 0, 1);
+    setPixel(lower, 1, 0, 1);
+    setPixel(upper, 1, 0, 2);
     return doc;
   }
 
@@ -224,7 +230,7 @@ describe('merge down', () => {
     const [lower, upper] = doc.layers;
     applyEdit(doc, mergeDownEdit(doc, upper.id), 'redo');
     expect(doc.layers).toEqual([lower]);
-    expect([getPixel(doc, lower, 0, 0), getPixel(doc, lower, 1, 0)]).toEqual([1, 2]);
+    expect([getPixel(lower, 0, 0), getPixel(lower, 1, 0)]).toEqual([1, 2]);
   });
 
   it('undo restores both layers as one step', () => {
@@ -234,8 +240,8 @@ describe('merge down', () => {
     perform(doc, history, mergeDownEdit(doc, upper.id));
     history.undo(doc);
     expect(doc.layers).toEqual([lower, upper]);
-    expect([getPixel(doc, lower, 0, 0), getPixel(doc, lower, 1, 0)]).toEqual([1, 1]);
-    expect(getPixel(doc, upper, 1, 0)).toBe(2);
+    expect([getPixel(lower, 0, 0), getPixel(lower, 1, 0)]).toEqual([1, 1]);
+    expect(getPixel(upper, 1, 0)).toBe(2);
   });
 
   it('merging an empty layer only removes it', () => {
@@ -254,6 +260,45 @@ describe('merge down', () => {
     applyEdit(doc, mergeDownEdit(doc, upper.id), 'redo');
     expect(lower.extrusion[1]).toBe(packExtrusion(1, 3));
     expect(lower.extrusion[0]).toBe(DEFAULT_EXTRUSION);
+  });
+});
+
+describe('layers on several sides', () => {
+  /** Front, top, front, top, bottom to top, in a 2×1×3 document. */
+  function mixed(): PixelDocument {
+    const doc = createDocument(2, 1, palette, 'mixed', 3);
+    doc.layers = doc.layers.filter((layer) => layer.facing === 'front' || layer.facing === 'top');
+    applyEdit(doc, addLayerEdit(doc, 'front'), 'redo');
+    applyEdit(doc, addLayerEdit(doc, 'top'), 'redo');
+    return doc;
+  }
+  const sides = (doc: PixelDocument) => doc.layers.map((l) => `${l.facing} ${l.name}`);
+
+  it('adds layers sized for their side, named per side', () => {
+    const doc = mixed();
+    expect(sides(doc)).toEqual(['front Layer 1', 'top Layer 1', 'front Layer 2', 'top Layer 2']);
+    expect([doc.layers[1].width, doc.layers[1].height]).toEqual([2, 3]);
+  });
+
+  it('moves and merges past the next layer of the same side', () => {
+    const doc = mixed();
+    const [bottom, , upper] = doc.layers;
+    expect(neighborLayerIndex(doc, bottom.id, 1)).toBe(2);
+    expect(neighborLayerIndex(doc, bottom.id, -1)).toBe(-1);
+    applyEdit(doc, moveLayerEdit(doc, bottom.id, neighborLayerIndex(doc, bottom.id, 1))!, 'redo');
+    expect(sides(doc)).toEqual(['top Layer 1', 'front Layer 2', 'front Layer 1', 'top Layer 2']);
+    setPixel(upper, 0, 0, 1);
+    applyEdit(doc, mergeDownEdit(doc, bottom.id), 'redo');
+    expect(sides(doc)).toEqual(['top Layer 1', 'front Layer 2', 'top Layer 2']);
+    expect(getPixel(upper, 0, 0)).toBe(1);
+  });
+
+  it('keeps a layer on every side', () => {
+    const doc = mixed();
+    expect(canRemoveLayer(doc, doc.layers[0].id)).toBe(true);
+    applyEdit(doc, removeLayerEdit(doc, doc.layers[0].id), 'redo');
+    expect(canRemoveLayer(doc, doc.layers[1].id)).toBe(false);
+    expect(() => removeLayerEdit(doc, doc.layers[1].id)).toThrow(/at least one layer/);
   });
 });
 

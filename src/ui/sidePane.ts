@@ -1,41 +1,38 @@
 import type { PixelEditSession } from '../core/edits.ts';
 import { carveCell, extendCell } from '../core/extrusion.ts';
-import { pixelRuns, runAt, seenFromRight, type VoxelModel } from '../core/model.ts';
+import { facingFrame, facingVoxel, oppositeDirection } from '../core/facing.ts';
+import { seenFrom, voxelSampler, type VoxelModel } from '../core/model.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { cellAt } from '../core/pixelDocument.ts';
 import { plotLine } from '../core/raster.ts';
-import { SideRenderer } from '../render/sideRenderer.ts';
+import { SideRenderer, type SideCell } from '../render/sideRenderer.ts';
 import { clampZoom, stepZoom, zoomAt } from '../render/viewport.ts';
 import { el, iconButton } from './dom.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 import { addToBar, createPaneFrame } from './paneFrame.ts';
+import { facingName } from './perspectiveBar.ts';
 import { adaptiveThrottle } from './throttle.ts';
 
 const BUTTON_PRIMARY = 0;
 const BUTTON_MIDDLE = 1;
 const BUTTON_SECONDARY = 2;
-/** Where the picture plane starts, from the pane's left edge (CSS px). */
+/** Where the camera's side of the volume starts, from the pane's left edge (CSS px). */
 const DEFAULT_OFFSET_X = 24;
-
-/** A depth cell of the side view: depth z of document row y. */
-interface SideCell {
-  z: number;
-  y: number;
-}
 
 type Gesture =
   | { kind: 'paint'; pointerId: number; session: PixelEditSession; index: number; last: SideCell }
   | { kind: 'pan'; pointerId: number; lastX: number; lastY: number };
 
 /**
- * The side view: the model's column `editor.sliceColumn` seen from the
- * right, depth left to right, its rows level with the canvas's. Painting a
- * cell with a color adds that depth to the pixel's box on the active layer
- * (or makes a new pixel there, one deep); painting with transparent (the
- * right button, by default) takes it away. A pixel's box has no gaps, so
- * adding fills up to the cell and taking away trims from the nearer end.
- * Alt+click picks the cell's color. Middle-drag pans and the wheel zooms,
- * together with the canvas.
+ * The side view: the model behind column `editor.sliceColumn` of the side
+ * being edited, seen from that side's right, its rows level with the
+ * canvas's: depth runs left to right from the camera's side to the far side.
+ * Painting a cell with a color adds it to the box of the active layer's
+ * pixel in that row (or makes a new pixel there, one deep); painting with
+ * transparent (the right button, by default) takes it away. A pixel's box
+ * has no gaps, so adding fills up to the cell and taking away trims from the
+ * nearer end. Alt+click picks the cell's color. Middle-drag pans and the
+ * wheel zooms, together with the canvas.
  */
 export function createSidePane(editor: Editor): HTMLElement {
   const { doc } = editor;
@@ -75,6 +72,7 @@ export function createSidePane(editor: Editor): HTMLElement {
     }
     renderer.render({
       doc,
+      facing: editor.facing,
       model,
       version: editor.contentVersion,
       column: editor.sliceColumn,
@@ -94,36 +92,40 @@ export function createSidePane(editor: Editor): HTMLElement {
   });
 
   const syncBar = () => {
-    column.textContent = `x ${editor.sliceColumn}`;
+    column.textContent = `${facingName(editor.facing)} column ${editor.sliceColumn}`;
     previous.disabled = editor.sliceColumn <= 0;
-    next.disabled = editor.sliceColumn >= doc.width - 1;
+    next.disabled = editor.sliceColumn >= editor.plane.width - 1;
     frame.canvas.classList.toggle('is-locked', !editor.activeLayer.visible);
   };
   editor.onChange(syncBar);
   syncBar();
 
+  /** Whether a cell is in the volume: one of the plane's rows, within its depth. */
+  const inside = ({ s, v }: SideCell) => v >= 0 && v < editor.plane.height && s >= 0 && s < editor.extent;
+
   const showWhere = () => {
-    const inside = hover && hover.y >= 0 && hover.y < doc.height && hover.z >= 0;
-    where.textContent = inside ? `y ${hover!.y} · z ${hover!.z}` : '';
+    // Depth counted from the far side, as boxes are.
+    where.textContent = hover && inside(hover) ? `row ${hover.v} · depth ${editor.extent - 1 - hover.s}` : '';
   };
 
   const cellAtPointer = (e: MouseEvent): SideCell => {
     const rect = canvas.getBoundingClientRect();
     const { zoom, offsetY } = editor.viewport;
     return {
-      z: Math.floor((e.clientX - rect.left - offsetX) / zoom),
-      y: Math.floor((e.clientY - rect.top - offsetY) / zoom),
+      s: Math.floor((e.clientX - rect.left - offsetX) / zoom),
+      v: Math.floor((e.clientY - rect.top - offsetY) / zoom),
     };
   };
 
-  /** Adds (a color) or takes away (transparent) depth z at row y of the column, on the active layer. */
-  const paintCell = (session: PixelEditSession, { z, y }: SideCell, index: number): boolean => {
-    const x = editor.sliceColumn;
-    if (y < 0 || y >= doc.height || z < 0 || x >= doc.width) return false;
+  /** Adds (a color) or takes away (transparent) a cell of the column's box in its row, on the active layer. */
+  const paintCell = (session: PixelEditSession, cell: SideCell, index: number): boolean => {
     const layer = editor.activeLayer;
-    const cell = cellAt(layer, y * doc.width + x);
-    const changed = index === TRANSPARENT ? carveCell(cell, z) : extendCell(cell, z, index);
-    return changed !== cell && session.setCell(x, y, changed);
+    const u = editor.sliceColumn;
+    if (!inside(cell) || u >= layer.width) return false;
+    const w = editor.extent - 1 - cell.s;
+    const current = cellAt(layer, cell.v * layer.width + u);
+    const changed = index === TRANSPARENT ? carveCell(current, w) : extendCell(current, w, index);
+    return changed !== current && session.setCell(u, cell.v, changed);
   };
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -158,10 +160,13 @@ export function createSidePane(editor: Editor): HTMLElement {
   };
 
   /** Picks the color shown at a cell, in its upper or lower half. */
-  const pickColor = ({ z, y }: SideCell, upper: boolean, slot: ColorSlot) => {
-    if (y < 0 || y >= doc.height || editor.sliceColumn >= doc.width) return;
-    const run = runAt(pixelRuns(doc, editor.sliceColumn, y), z);
-    const index = run && seenFromRight(run.quarters, upper);
+  const pickColor = (cell: SideCell, upper: boolean, slot: ColorSlot) => {
+    if (!inside(cell) || editor.sliceColumn >= editor.plane.width) return;
+    const { facing } = editor;
+    const { right, down } = facingFrame(facing);
+    const [x, y, z] = facingVoxel(doc, facing, editor.sliceColumn, cell.v, editor.extent - 1 - cell.s);
+    const content = voxelSampler(doc)(x, y, z);
+    const index = content && seenFrom(content, right, oppositeDirection(down), upper);
     if (index && index !== editor.colorIndex(slot)) editor.setColorIndex(slot, index);
   };
 
@@ -175,16 +180,16 @@ export function createSidePane(editor: Editor): HTMLElement {
       editor.requestRender('view');
     } else if (gesture?.pointerId === e.pointerId && gesture.kind === 'paint') {
       const { session, last, index } = gesture;
-      if (at.z === last.z && at.y === last.y) return;
+      if (at.s === last.s && at.v === last.v) return;
       let changed = false;
       // Every cell between, so fast drags leave no gaps.
-      plotLine(last.z, last.y, at.z, at.y, (z, y) => {
-        changed = paintCell(session, { z, y }, index) || changed;
+      plotLine(last.s, last.v, at.s, at.v, (s, v) => {
+        changed = paintCell(session, { s, v }, index) || changed;
       });
       gesture.last = at;
       if (changed) editor.requestRender();
     }
-    if (at.z !== hover?.z || at.y !== hover.y) {
+    if (at.s !== hover?.s || at.v !== hover.v) {
       hover = at;
       showWhere();
       if (!gesture) draw();

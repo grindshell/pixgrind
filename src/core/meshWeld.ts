@@ -34,12 +34,13 @@ export interface WeldedMesh {
  * 4. Where the surface touches itself along an edge or at a point (two
  *    boxes meeting only at an edge, say), each sheet gets its own copy of
  *    the vertices there, so every edge has two triangles and every vertex
- *    one fan.
+ *    one fan. Sheets that are one surface around both ends of such an edge
+ *    get their own vertex in its middle instead.
  *
  * `points` holds x, y, z per corner, polygon after polygon, `sizes` the
  * corner count of each, counter-clockwise from outside. Corners must lie on
  * a half-unit grid within ±2048, and edges must run along an axis or at 45°
- * in the x–y plane, as `buildMesh`'s do.
+ * in a plane square to one, as `buildMesh`'s do.
  */
 export function weldPolygons(points: Float32Array, sizes: ArrayLike<number>): WeldedMesh {
   // 1. Weld: one vertex per grid position.
@@ -64,9 +65,15 @@ export function weldPolygons(points: Float32Array, sizes: ArrayLike<number>): We
   }
 
   // 2. Every vertex on each line an edge can run along, sorted along it.
+  // Only the kinds of line some edge runs along: diagonals are rare.
+  const kinds = new Set<number>();
+  for (const polygon of polygons) {
+    for (let c = 0; c < polygon.length; c++) kinds.add(edgeKind(grid, polygon[c], polygon[(c + 1) % polygon.length]));
+  }
   const lines = new Map<number, Array<[number, number]>>();
   for (let id = 0; id < grid.length / 3; id++) {
-    for (const [key, along] of lineKeys(grid[id * 3], grid[id * 3 + 1], grid[id * 3 + 2])) {
+    for (const kind of kinds) {
+      const [key, along] = lineThrough(kind, grid[id * 3], grid[id * 3 + 1], grid[id * 3 + 2]);
       let line = lines.get(key);
       if (!line) lines.set(key, (line = []));
       line.push([along, id]);
@@ -113,41 +120,70 @@ function gridKey(x: number, y: number, z: number): number {
   return ((x + REACH) * SPAN + (y + REACH)) * SPAN + (z + REACH);
 }
 
-/** Line kinds: along x, y or z, or at 45° in the x–y plane, rising (x − y fixed) or falling (x + y fixed). */
+/**
+ * Line kinds: along x, y or z, or at 45° in a plane square to one axis, with
+ * the difference or the sum of the other two coordinates fixed.
+ */
 const ALONG_X = 0;
 const ALONG_Y = 1;
 const ALONG_Z = 2;
-const DIAGONAL_UP = 3;
-const DIAGONAL_DOWN = 4;
+const XY_DIFFERENCE = 3;
+const XY_SUM = 4;
+const XZ_DIFFERENCE = 5;
+const XZ_SUM = 6;
+const YZ_DIFFERENCE = 7;
+const YZ_SUM = 8;
 
 function lineKey(kind: number, a: number, b: number): number {
   return (kind * SPAN * 2 + (a + SPAN)) * SPAN * 2 + (b + SPAN);
 }
 
-/** The lines through a grid point, each with the point's position along it. */
-function lineKeys(x: number, y: number, z: number): Array<[number, number]> {
-  return [
-    [lineKey(ALONG_X, y, z), x],
-    [lineKey(ALONG_Y, x, z), y],
-    [lineKey(ALONG_Z, x, y), z],
-    [lineKey(DIAGONAL_UP, x - y, z), x],
-    [lineKey(DIAGONAL_DOWN, x + y, z), x],
-  ];
+/** The line of `kind` through a grid point, as its key and the point's position along it. */
+function lineThrough(kind: number, x: number, y: number, z: number): [number, number] {
+  switch (kind) {
+    case ALONG_X:
+      return [lineKey(kind, y, z), x];
+    case ALONG_Y:
+      return [lineKey(kind, x, z), y];
+    case ALONG_Z:
+      return [lineKey(kind, x, y), z];
+    case XY_DIFFERENCE:
+      return [lineKey(kind, x - y, z), x];
+    case XY_SUM:
+      return [lineKey(kind, x + y, z), x];
+    case XZ_DIFFERENCE:
+      return [lineKey(kind, x - z, y), x];
+    case XZ_SUM:
+      return [lineKey(kind, x + z, y), x];
+    case YZ_DIFFERENCE:
+      return [lineKey(kind, y - z, x), y];
+    default:
+      return [lineKey(kind, y + z, x), y];
+  }
+}
+
+/** The kind of line the edge from grid vertex `from` to `to` runs along. Throws for any other direction. */
+function edgeKind(grid: readonly number[], from: number, to: number): number {
+  const dx = grid[to * 3] - grid[from * 3];
+  const dy = grid[to * 3 + 1] - grid[from * 3 + 1];
+  const dz = grid[to * 3 + 2] - grid[from * 3 + 2];
+  if (dy === 0 && dz === 0) return ALONG_X;
+  if (dx === 0 && dz === 0) return ALONG_Y;
+  if (dx === 0 && dy === 0) return ALONG_Z;
+  if (dz === 0 && dx === dy) return XY_DIFFERENCE;
+  if (dz === 0 && dx === -dy) return XY_SUM;
+  if (dy === 0 && dx === dz) return XZ_DIFFERENCE;
+  if (dy === 0 && dx === -dz) return XZ_SUM;
+  if (dx === 0 && dy === dz) return YZ_DIFFERENCE;
+  if (dx === 0 && dy === -dz) return YZ_SUM;
+  throw new RangeError('Edge runs neither along an axis nor at 45° in a plane square to one');
 }
 
 /** The vertices strictly between `from` and `to` on the edge joining them, in order from `from`. */
 function verticesBetween(grid: readonly number[], lines: ReadonlyMap<number, Array<[number, number]>>, from: number, to: number): number[] {
-  const [x0, y0, z0] = [grid[from * 3], grid[from * 3 + 1], grid[from * 3 + 2]];
-  const [x1, y1, z1] = [grid[to * 3], grid[to * 3 + 1], grid[to * 3 + 2]];
-  let key: number;
-  let a: number;
-  let b: number;
-  if (y0 === y1 && z0 === z1) [key, a, b] = [lineKey(ALONG_X, y0, z0), x0, x1];
-  else if (x0 === x1 && z0 === z1) [key, a, b] = [lineKey(ALONG_Y, x0, z0), y0, y1];
-  else if (x0 === x1 && y0 === y1) [key, a, b] = [lineKey(ALONG_Z, x0, y0), z0, z1];
-  else if (z0 === z1 && x1 - x0 === y1 - y0) [key, a, b] = [lineKey(DIAGONAL_UP, x0 - y0, z0), x0, x1];
-  else if (z0 === z1 && x1 - x0 === y0 - y1) [key, a, b] = [lineKey(DIAGONAL_DOWN, x0 + y0, z0), x0, x1];
-  else throw new RangeError('Edge runs neither along an axis nor at 45° in the x–y plane');
+  const kind = edgeKind(grid, from, to);
+  const [key, a] = lineThrough(kind, grid[from * 3], grid[from * 3 + 1], grid[from * 3 + 2]);
+  const [, b] = lineThrough(kind, grid[to * 3], grid[to * 3 + 1], grid[to * 3 + 2]);
   const line = lines.get(key) ?? [];
   const low = Math.min(a, b);
   const high = Math.max(a, b);
@@ -206,17 +242,24 @@ function splitNonManifold(positions: readonly number[], triangles: readonly numb
     union(cornerOf(t1, b), cornerOf(t2, b));
   };
 
+  /** Edges shared by more than two triangles, with how they were paired. */
+  const sheetEdges: Array<{ a: number; b: number; pairs: Array<[number, number]> }> = [];
   for (const [key, around] of edges) {
     const a = Math.floor(key / vertexCount);
     const b = key % vertexCount;
-    if (around.length === 2) join(around[0], around[1], a, b);
-    else if (around.length > 2) for (const [t1, t2] of pairAroundEdge(positions, triangles, around, a, b)) join(t1, t2, a, b);
+    if (around.length === 2) {
+      join(around[0], around[1], a, b);
+    } else if (around.length > 2) {
+      const pairs = pairAroundEdge(positions, triangles, around, a, b);
+      for (const [t1, t2] of pairs) join(t1, t2, a, b);
+      sheetEdges.push({ a, b, pairs });
+    }
   }
 
   // A vertex per group of joined corners.
   const vertexOfRoot = new Map<number, number>();
   const out: number[] = [];
-  const indices = new Uint32Array(corners);
+  const indices: number[] = new Array<number>(corners);
   for (let i = 0; i < corners; i++) {
     const root = find(i);
     let vertex = vertexOfRoot.get(root);
@@ -228,7 +271,36 @@ function splitNonManifold(positions: readonly number[], triangles: readonly numb
     }
     indices[i] = vertex;
   }
-  return { positions: Float32Array.from(out), indices };
+
+  // Sheets that meet along an edge can still be joined around both its ends
+  // (the solid pinches to the edge, but is one piece past each end): then
+  // they'd share it. Each further sheet gets a vertex of its own in the
+  // middle of the edge instead, its two triangles there split in two.
+  for (const { a, b, pairs } of sheetEdges) {
+    const ends = new Set<string>();
+    for (const pair of pairs) {
+      const key = `${indices[cornerOf(pair[0], a)]},${indices[cornerOf(pair[0], b)]}`;
+      if (!ends.has(key)) {
+        ends.add(key);
+        continue;
+      }
+      const middle = out.length / 3;
+      for (let axis = 0; axis < 3; axis++) out.push((positions[a * 3 + axis] + positions[b * 3 + axis]) / 2);
+      for (const t of pair) {
+        // The triangle as (from, to, other), from and to along the edge in its winding.
+        const k = [0, 1, 2].find((c) => {
+          const next = triangles[t * 3 + ((c + 1) % 3)];
+          return (triangles[t * 3 + c] === a && next === b) || (triangles[t * 3 + c] === b && next === a);
+        })!;
+        const [from, to, other] = [0, 1, 2].map((c) => indices[t * 3 + ((k + c) % 3)]);
+        indices[t * 3] = from;
+        indices[t * 3 + 1] = middle;
+        indices[t * 3 + 2] = other;
+        indices.push(middle, to, other);
+      }
+    }
+  }
+  return { positions: Float32Array.from(out), indices: Uint32Array.from(indices) };
 }
 
 type Vec3 = [number, number, number];

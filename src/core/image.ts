@@ -1,5 +1,6 @@
 import { blue, green, packRgba, red, type Rgba } from './color.ts';
 import { compositeRgba } from './composite.ts';
+import { planeSize, type Facing } from './facing.ts';
 import { MAX_PALETTE_COLORS, type Palette } from './palette.ts';
 import { nearestColorIndex } from './paletteEdits.ts';
 import type { PixelDocument } from './pixelDocument.ts';
@@ -63,9 +64,9 @@ export function indexImageToPalette(data: Uint8ClampedArray, palette: Palette): 
 
 /* ---- Export: document → RGBA ---- */
 
-/** The visible layers flattened into one image. */
-export function documentImage(doc: PixelDocument): RgbaImage {
-  return { width: doc.width, height: doc.height, data: compositeRgba(doc) };
+/** The visible layers of one facing flattened into one image. */
+export function documentImage(doc: PixelDocument, facing: Facing): RgbaImage {
+  return { ...planeSize(doc, facing), data: compositeRgba(doc, facing) };
 }
 
 /** Scales up by a whole number with nearest-neighbor sampling, so pixels stay crisp squares. */

@@ -4,6 +4,7 @@ import {
   CUT_BOTTOM_RIGHT,
   CUT_TOP_LEFT,
   CUT_TOP_RIGHT,
+  fitExtrusion,
   MAX_DEPTH,
   MAX_OFFSET,
   MIN_DEPTH,
@@ -12,7 +13,9 @@ import {
   withShape,
   type Extrusion,
 } from '../core/extrusion.ts';
+import { setDepthEdit } from '../core/documentEdits.ts';
 import { updateExtrusionsEdit } from '../core/extrusionEdits.ts';
+import { MAX_DOCUMENT_SIZE } from '../core/pixelDocument.ts';
 import { MIN_LABEL_ZOOM } from '../render/canvasRenderer.ts';
 import { BUSY_MESSAGE } from './commands.ts';
 import { checkbox, el, fieldRow, iconButton, numberField, option, textButton } from './dom.ts';
@@ -65,27 +68,36 @@ export function createModelPanel(editor: Editor): HTMLElement {
   const status = el('p', 'panel-status');
   status.setAttribute('role', 'status');
 
+  const volumeDepth = numberField('Model depth', 1, MAX_DOCUMENT_SIZE, (value) => {
+    const edit = setDepthEdit(editor.doc, value);
+    if (edit && !editor.perform(edit)) status.textContent = BUSY_MESSAGE;
+  });
+  volumeDepth.label.title =
+    'How far the model goes back from the front: the space boxes grow in. It grows or shrinks at the front, ' +
+    'cutting off what no longer fits.';
+
   const depth = numberField('Depth', MIN_DEPTH, MAX_DEPTH, (value) => editor.setExtrude({ depth: value }));
-  depth.label.title = 'How many pixels deep the box is';
+  depth.label.title = 'How many pixels deep the box is, growing toward you from the far side';
   const offset = numberField('Offset', 0, MAX_OFFSET, (value) => editor.setExtrude({ offset: value }));
-  offset.label.title = 'How far behind the picture plane the box starts';
+  offset.label.title = 'How far out from the far side of the model the box starts';
 
   /** Changes the extrusions of the selection (or the whole active layer), reporting in the status line. */
   const apply = (update: (extrusion: Extrusion, x: number, y: number) => Extrusion, label: string, unchanged: string) => {
-    const { doc, activeLayer } = editor;
+    const { activeLayer } = editor;
     if (!activeLayer.visible) {
       status.textContent = "Can't change a hidden layer.";
       return;
     }
-    const edit = updateExtrusionsEdit(doc, activeLayer, doc.selection, update, label);
+    const edit = updateExtrusionsEdit(activeLayer, editor.selection, update, label);
     if (!edit) status.textContent = unchanged;
     else status.textContent = editor.perform(edit) ? '' : BUSY_MESSAGE;
   };
 
   const applyButton = textButton('Apply depth', () => {
     const { offset, depth } = editor.extrude;
+    const { extent } = editor;
     apply(
-      (extrusion) => withBox(extrusion, offset, depth),
+      (extrusion) => fitExtrusion(withBox(extrusion, offset, depth), extent),
       'Extrude',
       'Nothing to change: no painted pixels there, or they already have this depth and offset.',
     );
@@ -103,10 +115,10 @@ export function createModelPanel(editor: Editor): HTMLElement {
 
   const applyShapeButton = textButton('Apply shape', () => {
     const choice = editor.diagonal;
-    const { doc, activeLayer } = editor;
+    const { pixels, width, height } = editor.activeLayer;
     apply(
       (extrusion, x, y) => {
-        const shape = choice === 'auto' ? autoShape(activeLayer.pixels, doc.width, doc.height, x, y) : choice;
+        const shape = choice === 'auto' ? autoShape(pixels, width, height, x, y) : choice;
         return shape === null ? extrusion : withShape(extrusion, shape);
       },
       choice === SQUARE ? 'Square' : 'Diagonal',
@@ -146,6 +158,7 @@ export function createModelPanel(editor: Editor): HTMLElement {
 
   const note = el('p', 'panel-note');
   note.textContent =
+    'Each side of the model (1–6 over the canvas) has its own layers; boxes grow from the far side toward you. ' +
     'Extrude tool (D): paint this depth and offset onto pixels; right-click resets them to 1 deep. ' +
     'Diagonal tool (Shift+D): paint the shape above (Auto cuts staircase steps into slopes); right-click makes pixels square. ' +
     'Layers stack boxes behind the same pixel.';
@@ -153,9 +166,10 @@ export function createModelPanel(editor: Editor): HTMLElement {
   const render = () => {
     sideButton.setAttribute('aria-pressed', String(editor.panes.side));
     modelButton.setAttribute('aria-pressed', String(editor.panes.model));
+    volumeDepth.set(editor.doc.depth);
     depth.set(editor.extrude.depth);
     offset.set(editor.extrude.offset);
-    const where = editor.doc.selection ? 'selection' : 'layer';
+    const where = editor.selection ? 'selection' : 'layer';
     applyButton.textContent = `Apply depth to ${where}`;
     applyShapeButton.textContent = `Apply shape to ${where}`;
     for (const { choice, button } of shapeButtons) button.setAttribute('aria-pressed', String(choice === editor.diagonal));
@@ -166,6 +180,7 @@ export function createModelPanel(editor: Editor): HTMLElement {
 
   panel.append(
     header,
+    fieldRow(volumeDepth.label),
     fieldRow(depth.label, offset.label),
     fieldRow(applyButton),
     fieldRow(shapes),

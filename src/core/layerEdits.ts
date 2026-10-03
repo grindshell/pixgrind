@@ -8,36 +8,54 @@ import {
   type LayerPropsEdit,
   type LayerRemoveEdit,
 } from './edits.ts';
+import type { Facing } from './facing.ts';
 import { newId } from './id.ts';
-import { createLayer, type Layer } from './layer.ts';
+import type { Layer } from './layer.ts';
 import { TRANSPARENT } from './palette.ts';
-import { layerIndex, type PixelDocument } from './pixelDocument.ts';
+import { createFacingLayer, facingLayers, layerIndex, type PixelDocument } from './pixelDocument.ts';
 
 /*
  * Constructors for layer edits. Each validates against the current document
  * and returns an unapplied edit; perform it with `applyEdit(doc, edit, 'redo')`
  * (the editor does this in `Editor.perform`).
+ *
+ * Layers of all facings share one stack, but each facing's layers are a list
+ * of their own in the UI: moving and merging go to the next layer of the same
+ * facing, skipping others.
  */
 
 const DEFAULT_NAME = /^Layer (\d+)$/;
 
-/** "Layer N", with N one past the highest existing "Layer N". */
-export function nextLayerName(doc: PixelDocument): string {
-  const highest = Math.max(0, ...doc.layers.map((layer) => Number(DEFAULT_NAME.exec(layer.name)?.[1] ?? 0)));
-  return `Layer ${highest + 1}`;
+/** "Layer N", with N one past the highest existing "Layer N" on `facing`. */
+export function nextLayerName(doc: PixelDocument, facing: Facing): string {
+  const names = facingLayers(doc, facing).map((layer) => Number(DEFAULT_NAME.exec(layer.name)?.[1] ?? 0));
+  return `Layer ${Math.max(0, ...names) + 1}`;
 }
 
-/** A new empty layer at `index` (0 = bottom; defaults to the top). */
-export function addLayerEdit(doc: PixelDocument, index = doc.layers.length): LayerAddEdit {
+/** A new empty layer on `facing` at `index` (0 = bottom; defaults to the top). */
+export function addLayerEdit(doc: PixelDocument, facing: Facing, index = doc.layers.length): LayerAddEdit {
   if (!Number.isInteger(index) || index < 0 || index > doc.layers.length) {
     throw new RangeError(`Invalid layer position ${index}`);
   }
   return {
     kind: 'layer-add',
     label: 'Add layer',
-    layer: createLayer(doc.width, doc.height, nextLayerName(doc)),
+    layer: createFacingLayer(doc, facing, nextLayerName(doc, facing)),
     index,
   };
+}
+
+/**
+ * Position (in `doc.layers`) of the nearest layer above (`step` 1) or below
+ * (-1) a layer that has its facing, or -1 when there's none.
+ */
+export function neighborLayerIndex(doc: PixelDocument, layerId: string, step: 1 | -1): number {
+  const index = requireIndex(doc, layerId);
+  const { facing } = doc.layers[index];
+  for (let i = index + step; i >= 0 && i < doc.layers.length; i += step) {
+    if (doc.layers[i].facing === facing) return i;
+  }
+  return -1;
 }
 
 /** A copy of a layer, placed directly above it. */
@@ -54,9 +72,15 @@ export function duplicateLayerEdit(doc: PixelDocument, layerId: string): LayerAd
   return { kind: 'layer-add', label: 'Duplicate layer', layer: copy, index: index + 1 };
 }
 
+/** Whether a layer can be deleted: every facing keeps at least one. */
+export function canRemoveLayer(doc: PixelDocument, layerId: string): boolean {
+  const index = layerIndex(doc, layerId);
+  return index >= 0 && facingLayers(doc, doc.layers[index].facing).length > 1;
+}
+
 export function removeLayerEdit(doc: PixelDocument, layerId: string): LayerRemoveEdit {
   const index = requireIndex(doc, layerId);
-  if (doc.layers.length <= 1) throw new Error('A document needs at least one layer');
+  if (!canRemoveLayer(doc, layerId)) throw new Error('Each side of the model needs at least one layer');
   return { kind: 'layer-remove', label: 'Delete layer', layer: doc.layers[index], index };
 }
 
@@ -103,17 +127,19 @@ export function layerPropsEdit(
 export type MergeCheck = { ok: true } | { ok: false; reason: string };
 
 /**
- * Whether a layer can merge into the one below it. Palette indices can't
- * blend, so a merge is only exact when both layers are visible and fully
- * opaque. A pixel has one box in 3D, so where both layers have a pixel their
- * extrusions must match, or the lower layer's boxes would be lost.
+ * Whether a layer can merge into the one below it on its facing. Palette
+ * indices can't blend, so a merge is only exact when both layers are visible
+ * and fully opaque. A pixel has one box in 3D, so where both layers have a
+ * pixel their extrusions must match, or the lower layer's boxes would be
+ * lost.
  */
 export function canMergeDown(doc: PixelDocument, layerId: string): MergeCheck {
   const index = layerIndex(doc, layerId);
   if (index < 0) return { ok: false, reason: 'Layer not found' };
-  if (index === 0) return { ok: false, reason: 'No layer below to merge into' };
+  const below = neighborLayerIndex(doc, layerId, -1);
+  if (below < 0) return { ok: false, reason: 'No layer below to merge into' };
   const upper = doc.layers[index];
-  const lower = doc.layers[index - 1];
+  const lower = doc.layers[below];
   if (!upper.visible || !lower.visible) return { ok: false, reason: 'Both layers must be visible' };
   if (upper.opacity !== 1 || lower.opacity !== 1) return { ok: false, reason: 'Both layers must be at 100% opacity' };
   for (let i = 0; i < upper.pixels.length; i++) {
@@ -125,17 +151,17 @@ export function canMergeDown(doc: PixelDocument, layerId: string): MergeCheck {
 }
 
 /**
- * Merges a layer into the one below: the upper layer's non-transparent pixels
- * replace the lower layer's, extrusions included, then the upper layer is
- * removed. Exact for opaque palette colors; a translucent color replaces what
- * was beneath it instead of blending.
+ * Merges a layer into the one below it on its facing: the upper layer's
+ * non-transparent pixels replace the lower layer's, extrusions included,
+ * then the upper layer is removed. Exact for opaque palette colors; a
+ * translucent color replaces what was beneath it instead of blending.
  */
 export function mergeDownEdit(doc: PixelDocument, layerId: string): BatchEdit {
   const check = canMergeDown(doc, layerId);
   if (!check.ok) throw new Error(`Cannot merge down: ${check.reason}`);
   const index = layerIndex(doc, layerId);
   const upper = doc.layers[index];
-  const lower = doc.layers[index - 1];
+  const lower = doc.layers[neighborLayerIndex(doc, layerId, -1)];
 
   const merged = lower.pixels.slice();
   const mergedExtrusion = lower.extrusion.slice();

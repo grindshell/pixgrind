@@ -49,7 +49,7 @@ export function createSelectionPanel(editor: Editor): HTMLElement {
   const render = () => {
     for (const { mode, button } of modeButtons) button.setAttribute('aria-pressed', String(mode === editor.selectionMode));
     contiguous.input.checked = editor.wandContiguous;
-    none.disabled = !editor.doc.selection && !editor.doc.floating;
+    none.disabled = !editor.selection && !editor.doc.floating;
   };
 
   editor.onChange(render);

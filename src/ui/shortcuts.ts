@@ -1,4 +1,5 @@
 import { stepBrushSize } from '../core/brush.ts';
+import { FACINGS } from '../core/facing.ts';
 import { clearSelection, deselect, dropFloating, invertSelection, nudge, selectAll } from './commands.ts';
 import { isTextEntry, usesArrowKeys } from './dom.ts';
 import type { Editor } from './editor.ts';
@@ -98,6 +99,14 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();
       editor.setBrush({ size: stepBrushSize(editor.brush.size, e.key === ']' ? 1 : -1) });
+      return;
+    }
+
+    // 1–6 pick the side being edited, in the perspective bar's order.
+    const side = /^[1-6]$/.test(e.key) && !e.shiftKey ? FACINGS[Number(e.key) - 1] : undefined;
+    if (side) {
+      e.preventDefault();
+      editor.setFacing(side);
       return;
     }
 

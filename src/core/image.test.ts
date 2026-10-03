@@ -84,8 +84,8 @@ describe('flattenImage', () => {
 describe('documentImage', () => {
   it('flattens visible layers at document size', () => {
     const doc = createDocument(2, 1, createPalette('p', [0xff0000ff]));
-    setPixel(doc, doc.layers[0], 1, 0, 1);
-    const image = documentImage(doc);
+    setPixel(doc.layers[0], 1, 0, 1);
+    const image = documentImage(doc, 'front');
     expect([image.width, image.height]).toEqual([2, 1]);
     expect(pixelsOf(image)).toEqual([CLEAR.join(), RED.join()]);
   });

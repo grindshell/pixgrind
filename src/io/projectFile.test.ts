@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { CUT_BOTTOM_LEFT, CUT_TOP_LEFT, CUT_TOP_RIGHT, DEFAULT_EXTRUSION, packExtrusion } from '../core/extrusion.ts';
+import { CUT_BOTTOM_LEFT, CUT_TOP_RIGHT, DEFAULT_EXTRUSION, packExtrusion } from '../core/extrusion.ts';
 import { createLayer } from '../core/layer.ts';
 import { rectMask } from '../core/mask.ts';
+import { buildVoxelModel } from '../core/model.ts';
 import { createPalette } from '../core/palette.ts';
-import { createDocument, setPixel, type PixelDocument } from '../core/pixelDocument.ts';
+import { createDocument, facingLayers, setPixel, type PixelDocument } from '../core/pixelDocument.ts';
 import { MAX_REFERENCE_SCALE } from '../core/referencePlacement.ts';
-import { deflate, toBase64, uint16ToBytes } from './bytes.ts';
+import { deflate, toBase64, uint16ToBytes, uint32ToBytes } from './bytes.ts';
 import {
   isProjectFile,
   parseProject,
@@ -16,16 +17,18 @@ import {
 
 const palette = createPalette('Mine', [0x000000ff, 0xff000080, 0x00ff00ff]);
 
+/** A 5×3×4 document: two front layers (the second hidden and faint), and a pixel on the top. */
 function sampleDoc(): PixelDocument {
-  const doc = createDocument(5, 3, palette, 'hero');
-  setPixel(doc, doc.layers[0], 0, 0, 1);
-  setPixel(doc, doc.layers[0], 4, 2, 2);
-  const top = createLayer(5, 3, 'Shading');
-  top.visible = false;
-  top.opacity = 0.25;
-  top.pixels[7] = 3;
-  doc.layers.push(top);
-  doc.selection = rectMask({ x: 1, y: 1, width: 2, height: 1 });
+  const doc = createDocument(5, 3, palette, 'hero', 4);
+  setPixel(doc.layers[0], 0, 0, 1);
+  setPixel(doc.layers[0], 4, 2, 2);
+  const shading = createLayer(5, 3, 'Shading');
+  shading.visible = false;
+  shading.opacity = 0.25;
+  shading.pixels[7] = 3;
+  doc.layers.splice(1, 0, shading);
+  setPixel(facingLayers(doc, 'top')[0], 2, 3, 3);
+  doc.selections.front = rectMask({ x: 1, y: 1, width: 2, height: 1 });
   return doc;
 }
 
@@ -52,16 +55,39 @@ function layersOf(json: Record<string, unknown>): Array<Record<string, unknown>>
   return json.layers as Array<Record<string, unknown>>;
 }
 
+/**
+ * A version 1–3 file: one 3×1 front layer of pixels [1, 2, 0], with boxes
+ * (`offset << 8 | depth`, back from the picture plane) and shapes when given.
+ */
+async function legacyJson(version: number, boxes?: number[], shapes?: number[]): Promise<string> {
+  const layer: Record<string, unknown> = {
+    name: 'Old',
+    visible: true,
+    opacity: 1,
+    pixels: toBase64(await deflate(Uint8Array.of(1, 2, 0))),
+  };
+  if (boxes) layer.extrusion = toBase64(await deflate(uint16ToBytes(Uint16Array.from(boxes))));
+  if (shapes) layer.shapes = toBase64(await deflate(Uint8Array.from(shapes)));
+  return JSON.stringify({
+    format: 'pixgrind',
+    version,
+    name: 'old',
+    width: 3,
+    height: 1,
+    palette: { name: 'Mine', colors: ['#000000', '#ff0000'] },
+    layers: [layer],
+  });
+}
+
 describe('project files', () => {
-  it('round-trips name, size, palette and layers', async () => {
+  it('round-trips name, size, palette and layers on every side', async () => {
     const doc = sampleDoc();
     const { document: loaded, reference } = await parseProject(await serializeProject(doc));
-    expect([loaded.name, loaded.width, loaded.height]).toEqual(['hero', 5, 3]);
+    expect([loaded.name, loaded.width, loaded.height, loaded.depth]).toEqual(['hero', 5, 3, 4]);
     expect(loaded.palette).toEqual(palette);
-    expect(loaded.layers.map(({ name, visible, opacity }) => ({ name, visible, opacity }))).toEqual([
-      { name: 'Layer 1', visible: true, opacity: 1 },
-      { name: 'Shading', visible: false, opacity: 0.25 },
-    ]);
+    const props = (d: PixelDocument) => d.layers.map(({ name, visible, opacity, facing, width, height }) => ({ name, visible, opacity, facing, width, height }));
+    expect(props(loaded)).toEqual(props(doc));
+    expect(props(loaded)[1]).toEqual({ name: 'Shading', visible: false, opacity: 0.25, facing: 'front', width: 5, height: 3 });
     loaded.layers.forEach((layer, i) => expect(layer.pixels).toEqual(doc.layers[i].pixels));
     expect(reference).toBeNull();
   });
@@ -69,15 +95,16 @@ describe('project files', () => {
   it('does not save the selection, and gives loaded layers fresh ids', async () => {
     const doc = sampleDoc();
     const { document: loaded } = await parseProject(await serializeProject(doc));
-    expect(loaded.selection).toBeNull();
-    expect(new Set([...doc.layers, ...loaded.layers].map((l) => l.id)).size).toBe(4);
+    expect(Object.values(loaded.selections).every((selection) => selection === null)).toBe(true);
+    expect(new Set([...doc.layers, ...loaded.layers].map((l) => l.id)).size).toBe(doc.layers.length * 2);
   });
 
   it('writes a versioned, readable JSON file with compressed pixels', async () => {
     const doc = createDocument(256, 256, palette, 'big');
     const json = JSON.parse(await serializeProject(doc)) as Record<string, unknown>;
-    expect(json).toMatchObject({ format: 'pixgrind', version: PROJECT_VERSION, width: 256, height: 256 });
+    expect(json).toMatchObject({ format: 'pixgrind', version: PROJECT_VERSION, width: 256, height: 256, depth: 256 });
     expect(json.palette).toEqual({ name: 'Mine', colors: ['#000000', '#ff000080', '#00ff00'] });
+    expect(layersOf(json).map((layer) => layer.facing)).toEqual(['front', 'back', 'left', 'right', 'top', 'bottom']);
     // 65,536 transparent pixels compress to a few hundred bytes.
     expect((layersOf(json)[0].pixels as string).length).toBeLessThan(500);
   });
@@ -105,74 +132,70 @@ describe('project files', () => {
     expect(loaded.name).toBe('hero');
   });
 
-  it('round-trips extrusions, and leaves them out when all are the default', async () => {
+  it('round-trips extrusions and shapes, and leaves them out when all are the default', async () => {
     const doc = sampleDoc();
     expect(layersOf(JSON.parse(await serializeProject(doc)) as Record<string, unknown>)[0]).not.toHaveProperty('extrusion');
-    doc.layers[0].extrusion[0] = packExtrusion(3, 7);
+    doc.layers[0].extrusion[0] = packExtrusion(3, 1, CUT_TOP_RIGHT);
+    doc.layers[0].extrusion[14] = packExtrusion(900, 120, CUT_BOTTOM_LEFT);
     doc.layers[0].extrusion[1] = packExtrusion(9, 9); // transparent pixel: not saved
     const json = JSON.parse(await serializeProject(doc)) as Record<string, unknown>;
     expect(layersOf(json)[0]).toHaveProperty('extrusion');
     expect(layersOf(json)[1]).not.toHaveProperty('extrusion');
     const { document: loaded } = await parseProject(JSON.stringify(json));
-    expect(loaded.layers[0].extrusion[0]).toBe(packExtrusion(3, 7));
-    expect(loaded.layers[0].extrusion[1]).toBe(DEFAULT_EXTRUSION);
-  });
-
-  it('round-trips shapes apart from boxes, and leaves them out when all are square', async () => {
-    const doc = sampleDoc();
-    doc.layers[0].extrusion[0] = packExtrusion(0, 1, CUT_TOP_RIGHT);
-    doc.layers[0].extrusion[14] = packExtrusion(2, 5, CUT_BOTTOM_LEFT);
-    doc.layers[0].extrusion[3] = packExtrusion(0, 1, CUT_TOP_LEFT); // transparent pixel: not saved
-    const json = JSON.parse(await serializeProject(doc)) as Record<string, unknown>;
-    expect(layersOf(json)[0]).toHaveProperty('shapes');
-    expect(layersOf(json)[1]).not.toHaveProperty('shapes');
-    const { document: loaded } = await parseProject(JSON.stringify(json));
-    expect([0, 3, 14].map((i) => loaded.layers[0].extrusion[i])).toEqual([
-      packExtrusion(0, 1, CUT_TOP_RIGHT),
+    expect([0, 1, 14].map((i) => loaded.layers[0].extrusion[i])).toEqual([
+      packExtrusion(3, 1, CUT_TOP_RIGHT),
       DEFAULT_EXTRUSION,
-      packExtrusion(2, 5, CUT_BOTTOM_LEFT),
+      packExtrusion(900, 120, CUT_BOTTOM_LEFT),
     ]);
-    // Only the shape differs from the default for pixel 0, so boxes are saved for pixel 14 alone.
-    doc.layers[0].extrusion[14] = packExtrusion(0, 1, CUT_BOTTOM_LEFT);
-    expect(layersOf(JSON.parse(await serializeProject(doc)) as Record<string, unknown>)[0]).not.toHaveProperty('extrusion');
   });
 
-  it('reads version 1 and 2 files, which have no extrusions or shapes', async () => {
-    const json = { ...(await sampleJson()), version: 1 };
+  it('adds an empty layer for a side the file has none on', async () => {
+    const json = await sampleJson();
+    json.layers = layersOf(json).filter((layer) => layer.facing !== 'left');
     const { document: loaded } = await parseProject(JSON.stringify(json));
-    expect(loaded.layers[0].pixels[0]).toBe(1);
-    expect(loaded.layers[0].extrusion.every((e) => e === DEFAULT_EXTRUSION)).toBe(true);
-
-    const doc = sampleDoc();
-    doc.layers[0].extrusion[0] = packExtrusion(3, 7);
-    const v2 = { ...(JSON.parse(await serializeProject(doc)) as Record<string, unknown>), version: 2 };
-    const { document: fromV2 } = await parseProject(JSON.stringify(v2));
-    expect(fromV2.layers[0].extrusion[0]).toBe(packExtrusion(3, 7));
-  });
-
-  it('rejects shape data that is corrupt, the wrong size, or unknown', async () => {
-    const parse = (json: unknown) => parseProject(JSON.stringify(json));
-    const shaped = async (values: Uint8Array<ArrayBuffer>) => {
-      const json = await sampleJson();
-      layersOf(json)[0].shapes = toBase64(await deflate(values));
-      return json;
-    };
-    const corrupt = await sampleJson();
-    layersOf(corrupt)[0].shapes = 'AAAA';
-    await expect(parse(corrupt)).rejects.toThrow(/layer 1 shape data is corrupted/);
-    await expect(parse(await shaped(new Uint8Array(14)))).rejects.toThrow(/14 shapes for 15 pixels/);
-    // Pixel 0 is painted; pixel 1 isn't, so its shape doesn't matter.
-    const unknown = new Uint8Array(15);
-    unknown[1] = 9;
-    await expect(parse(await shaped(unknown))).resolves.toBeTruthy();
-    unknown[0] = 5;
-    await expect(parse(await shaped(unknown))).rejects.toThrow(/layer 1 has a pixel of unknown shape 5/);
+    expect(facingLayers(loaded, 'left').map((l) => [l.width, l.height, l.pixels.every((p) => p === 0)])).toEqual([[4, 3, true]]);
   });
 
   it('recognizes project files by extension', () => {
     expect(isProjectFile({ name: 'hero.pixgrind' })).toBe(true);
     expect(isProjectFile({ name: 'HERO.PIXGRIND' })).toBe(true);
     expect(isProjectFile({ name: 'hero.png' })).toBe(false);
+  });
+});
+
+describe('older project files', () => {
+  it('turn flat art (version 1) into the front of a volume one deep', async () => {
+    const { document: loaded } = await parseProject(await legacyJson(1));
+    expect([loaded.width, loaded.height, loaded.depth]).toEqual([3, 1, 1]);
+    expect(loaded.layers.map((l) => l.facing).sort()).toEqual(['back', 'bottom', 'front', 'left', 'right', 'top']);
+    const [front] = facingLayers(loaded, 'front');
+    expect(front.name).toBe('Old');
+    expect(Array.from(front.pixels)).toEqual([1, 2, 0]);
+    expect(front.extrusion.every((e) => e === DEFAULT_EXTRUSION)).toBe(true);
+  });
+
+  it('turn boxes around to grow from the back of a volume as deep as the deepest, so the model is the same', async () => {
+    // Pixel 0 from the picture plane 2 back, pixel 1 from 1 back to 4: 4 deep.
+    const { document: loaded } = await parseProject(await legacyJson(2, [0x0002, 0x0103, 0x0000]));
+    expect(loaded.depth).toBe(4);
+    const [front] = facingLayers(loaded, 'front');
+    expect(Array.from(front.extrusion.slice(0, 2))).toEqual([packExtrusion(2, 2), packExtrusion(0, 3)]);
+    // In the model, z counts back from the front, as the old boxes did.
+    const { columns } = buildVoxelModel(loaded);
+    expect(columns.slice(0, 2).map((runs) => runs?.map(({ start, end }) => [start, end]))).toEqual([[[0, 2]], [[1, 4]]]);
+  });
+
+  it('keep version 3 shapes', async () => {
+    const { document: loaded } = await parseProject(await legacyJson(3, [0x0001, 0x0001, 0x0001], [CUT_TOP_RIGHT, 0, 7]));
+    expect(facingLayers(loaded, 'front')[0].extrusion[0]).toBe(packExtrusion(0, 1, CUT_TOP_RIGHT));
+  });
+
+  it('reject boxes 0 deep and unknown shapes on painted pixels', async () => {
+    // Pixel 2 is transparent, so its values don't matter.
+    await expect(parseProject(await legacyJson(2, [0x0001, 0x0001, 0x0000]))).resolves.toBeTruthy();
+    await expect(parseProject(await legacyJson(2, [0x0400, 0x0001, 0x0001]))).rejects.toThrow(/layer 1 has a pixel extruded 0 deep/);
+    await expect(parseProject(await legacyJson(3, undefined, [0, 5, 0]))).rejects.toThrow(/layer 1 has a pixel of unknown shape 5/);
+    await expect(parseProject(await legacyJson(3, undefined, [0, 0]))).rejects.toThrow(/2 shapes for 3 pixels/);
   });
 });
 
@@ -192,17 +215,21 @@ describe('parseProject errors', () => {
 
   it('rejects missing or mistyped fields with the field named', async () => {
     await expect(parse({ ...(await sampleJson()), name: 3 })).rejects.toThrow(/name must be text/);
+    await expect(parse({ ...(await sampleJson()), depth: '4' })).rejects.toThrow(/depth must be a number/);
     await expect(parse({ ...(await sampleJson()), palette: null })).rejects.toThrow(/palette is missing/);
     await expect(parse({ ...(await sampleJson()), layers: [] })).rejects.toThrow(/no layers/);
 
     const json = await sampleJson();
     layersOf(json)[1].visible = 'yes';
     await expect(parse(json)).rejects.toThrow(/layer 2 visibility/);
+    layersOf(json)[1].facing = 'inside';
+    await expect(parse(json)).rejects.toThrow(/layer 2 facing must be one of/);
   });
 
   it('rejects bad sizes, palettes and opacities', async () => {
     await expect(parse({ ...(await sampleJson()), width: 4096 })).rejects.toThrow(/too large/);
     await expect(parse({ ...(await sampleJson()), width: 0 })).rejects.toThrow(/Invalid document size/);
+    await expect(parse({ ...(await sampleJson()), depth: 2000 })).rejects.toThrow(/too large/);
     await expect(parse({ ...(await sampleJson()), palette: { name: 'x', colors: [] } })).rejects.toThrow(/0 colors/);
     await expect(parse({ ...(await sampleJson()), palette: { name: 'x', colors: ['#12'] } })).rejects.toThrow(
       /palette color 1/,
@@ -215,7 +242,7 @@ describe('parseProject errors', () => {
     await expect(parse(json)).rejects.toThrow(/layer 1 opacity must be between 0 and 1/);
   });
 
-  it('rejects pixel data that is corrupt or the wrong size', async () => {
+  it('rejects pixel data that is corrupt or the wrong size for its side', async () => {
     const corrupt = await sampleJson();
     layersOf(corrupt)[0].pixels = 'AAAA';
     await expect(parse(corrupt)).rejects.toThrow(/layer 1 pixel data is corrupted/);
@@ -227,24 +254,29 @@ describe('parseProject errors', () => {
     const long = await sampleJson();
     layersOf(long)[0].pixels = toBase64(await deflate(new Uint8Array(16)));
     await expect(parse(long)).rejects.toThrow(/layer 1 pixel data is corrupted/);
+
+    // The left side of a 5×3×4 model is 4×3.
+    const sideways = await sampleJson();
+    layersOf(sideways)[3].pixels = toBase64(await deflate(new Uint8Array(15)));
+    await expect(parse(sideways)).rejects.toThrow(/layer 4 pixel data is corrupted/);
   });
 
-  it('rejects extrusion data that is corrupt, the wrong size, or 0 deep', async () => {
-    const extruded = async (values: Uint16Array) => {
+  it('rejects extrusion data that is corrupt, the wrong size, or invalid', async () => {
+    const extruded = async (values: Uint32Array) => {
       const json = await sampleJson();
-      layersOf(json)[0].extrusion = toBase64(await deflate(uint16ToBytes(values)));
+      layersOf(json)[0].extrusion = toBase64(await deflate(uint32ToBytes(values)));
       return json;
     };
     const corrupt = await sampleJson();
     layersOf(corrupt)[0].extrusion = 'AAAA';
     await expect(parse(corrupt)).rejects.toThrow(/layer 1 extrusion data is corrupted/);
-    await expect(parse(await extruded(new Uint16Array(14).fill(1)))).rejects.toThrow(/14 extrusions for 15 pixels/);
+    await expect(parse(await extruded(new Uint32Array(14).fill(DEFAULT_EXTRUSION)))).rejects.toThrow(/14 extrusions for 15 pixels/);
     // Pixel 0 is painted; pixel 1 isn't, so its 0 doesn't matter.
-    const zeroDeep = new Uint16Array(15).fill(1);
+    const zeroDeep = new Uint32Array(15).fill(DEFAULT_EXTRUSION);
     zeroDeep[1] = 0;
     await expect(parse(await extruded(zeroDeep))).resolves.toBeTruthy();
-    zeroDeep[0] = 0x0400; // offset 4, depth 0
-    await expect(parse(await extruded(zeroDeep))).rejects.toThrow(/layer 1 has a pixel extruded 0 deep/);
+    zeroDeep[0] = 4 << 11; // offset 4, depth 0
+    await expect(parse(await extruded(zeroDeep))).rejects.toThrow(/layer 1 has a pixel with an invalid extrusion/);
   });
 
   it('makes pixel indices past the palette transparent, as they render', async () => {

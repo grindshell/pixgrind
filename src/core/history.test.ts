@@ -8,7 +8,7 @@ const palette = createPalette('test', [0xff0000ff, 0x00ff00ff]);
 
 /** Paints (x, 0) with `index` as one edit, the way a stroke would. */
 function paint(doc: PixelDocument, x: number, index: number): PixelEdit {
-  const session = beginPixelEdit(doc, doc.layers[0], `paint ${x}`);
+  const session = beginPixelEdit(doc.layers[0], `paint ${x}`);
   session.setPixel(x, 0, index);
   const edit = session.finish();
   if (!edit) throw new Error('expected a change');
@@ -16,7 +16,7 @@ function paint(doc: PixelDocument, x: number, index: number): PixelEdit {
 }
 
 function row(doc: PixelDocument): number[] {
-  return [0, 1, 2, 3].map((x) => getPixel(doc, doc.layers[0], x, 0));
+  return [0, 1, 2, 3].map((x) => getPixel(doc.layers[0], x, 0));
 }
 
 describe('History', () => {

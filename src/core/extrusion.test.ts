@@ -14,6 +14,7 @@ import {
   extrusionEnd,
   extrusionOffset,
   extrusionShape,
+  fitExtrusion,
   isExtrusion,
   MAX_DEPTH,
   MAX_OFFSET,
@@ -38,7 +39,7 @@ describe('extrusions', () => {
     expect([extrusionOffset(extrusion), extrusionDepth(extrusion), extrusionEnd(extrusion)]).toEqual([12, 200, 212]);
     expect(DEFAULT_EXTRUSION).toBe(packExtrusion(0, 1));
     expect(isExtrusion(packExtrusion(MAX_OFFSET, MAX_DEPTH))).toBe(true);
-    expect(isExtrusion(0x0300)).toBe(false);
+    expect(isExtrusion(1 << 11)).toBe(false);
   });
 
   it('reject out-of-range values', () => {
@@ -58,6 +59,12 @@ describe('extrusions', () => {
     expect(cellExtrusion(largest)).toBe(packExtrusion(MAX_OFFSET, MAX_DEPTH, CUT_BOTTOM_LEFT));
   });
 
+  it('fit a volume: moved in when they start past it, then cut short', () => {
+    expect(fitExtrusion(packExtrusion(2, 3, CUT_TOP_LEFT), 5)).toBe(packExtrusion(2, 3, CUT_TOP_LEFT));
+    expect(fitExtrusion(packExtrusion(2, 6), 5)).toBe(packExtrusion(2, 3));
+    expect(fitExtrusion(packExtrusion(9, 2), 5)).toBe(packExtrusion(4, 1));
+  });
+
   it('carry a shape, changed apart from the box', () => {
     const extrusion = packExtrusion(12, 200, CUT_TOP_RIGHT);
     expect([extrusionOffset(extrusion), extrusionDepth(extrusion), extrusionShape(extrusion)]).toEqual([12, 200, CUT_TOP_RIGHT]);
@@ -65,7 +72,7 @@ describe('extrusions', () => {
     expect(withBox(extrusion, 1, 2)).toBe(packExtrusion(1, 2, CUT_TOP_RIGHT));
     expect(withShape(extrusion, CUT_BOTTOM_LEFT)).toBe(packExtrusion(12, 200, CUT_BOTTOM_LEFT));
     expect(isExtrusion(extrusion)).toBe(true);
-    expect(isExtrusion((5 << 16) | 1)).toBe(false);
+    expect(isExtrusion((5 << 21) | 1)).toBe(false);
     expect(() => packExtrusion(0, 1, 5 as Shape)).toThrow(RangeError);
   });
 });
@@ -101,11 +108,11 @@ describe('autoShape', () => {
 });
 
 describe('extendCell', () => {
-  it('starts a transparent pixel one deep at z', () => {
+  it('starts a transparent pixel one deep at w', () => {
     expect(parts(extendCell(packCell(0, DEFAULT_EXTRUSION), 5, 3))).toEqual([3, 5, 1]);
   });
 
-  it('grows a box to reach z, keeping its color', () => {
+  it('grows a box to reach w, keeping its color', () => {
     expect(parts(extendCell(cell(2, 3, 2), 7, 9))).toEqual([2, 3, 5]);
     expect(parts(extendCell(cell(2, 3, 2), 0, 9))).toEqual([2, 0, 5]);
     expect(extendCell(cell(2, 3, 2), 4, 9)).toBe(cell(2, 3, 2));
@@ -125,15 +132,16 @@ describe('extendCell', () => {
 });
 
 describe('carveCell', () => {
-  it('trims whichever end is nearer, the back on a tie', () => {
+  it('trims whichever end is nearer, the far one on a tie', () => {
     // Box from 2 to 7 (exclusive).
     expect(parts(carveCell(cell(4, 2, 5), 2))).toEqual([4, 3, 4]);
     expect(parts(carveCell(cell(4, 2, 5), 3))).toEqual([4, 4, 3]);
-    expect(parts(carveCell(cell(4, 2, 5), 4))).toEqual([4, 2, 2]);
+    // The middle: the far end goes, keeping the end the camera sees.
+    expect(parts(carveCell(cell(4, 2, 5), 4))).toEqual([4, 5, 2]);
     expect(parts(carveCell(cell(4, 2, 5), 6))).toEqual([4, 2, 4]);
   });
 
-  it('makes a one-deep box transparent, and ignores z outside the box', () => {
+  it('makes a one-deep box transparent, and ignores w outside the box', () => {
     expect(cellIndex(carveCell(cell(4, 2, 1), 2))).toBe(0);
     expect(carveCell(cell(4, 2, 1), 3)).toBe(cell(4, 2, 1));
     expect(carveCell(packCell(0, DEFAULT_EXTRUSION), 0)).toBe(packCell(0, DEFAULT_EXTRUSION));

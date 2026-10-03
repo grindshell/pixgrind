@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { importImageLayerEdit, openImageEdit, replaceDocumentEdit } from './documentEdits.ts';
+import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, setDepthEdit } from './documentEdits.ts';
 import { applyEdit, documentState, type DocumentEdit } from './edits.ts';
+import { extrusionDepth, extrusionOffset, packExtrusion } from './extrusion.ts';
+import { buildVoxelModel } from './model.ts';
 import { History } from './history.ts';
 import type { RgbaImage } from './image.ts';
 import { createLayer } from './layer.ts';
@@ -22,9 +24,9 @@ function imageFrom(rows: string[]): RgbaImage {
 
 function existingDoc(): PixelDocument {
   const doc = createDocument(4, 4, palette, 'Old');
-  setPixel(doc, doc.layers[0], 0, 0, 2);
+  setPixel(doc.layers[0], 0, 0, 2);
   doc.layers.push(createLayer(4, 4, 'Top'));
-  doc.selection = rectMask({ x: 1, y: 1, width: 2, height: 2 });
+  doc.selections.front = rectMask({ x: 1, y: 1, width: 2, height: 2 });
   return doc;
 }
 
@@ -34,9 +36,11 @@ describe('openImageEdit', () => {
     applyEdit(doc, openImageEdit(doc, imageFrom(['gr.', 'rrb']), 'sprite', 'image'), 'redo');
     expect([doc.name, doc.width, doc.height]).toEqual(['sprite', 3, 2]);
     expect(doc.palette).toEqual(createPalette('sprite', [0x00ff00ff, 0xff0000ff, 0x0000ffff]));
-    expect(doc.layers).toHaveLength(1);
+    // The image on the front, an empty layer on every other side, as deep as it is wide.
+    expect(doc.layers.map((l) => l.facing)).toEqual(['front', 'back', 'left', 'right', 'top', 'bottom']);
+    expect(doc.depth).toBe(3);
     expect(Array.from(doc.layers[0].pixels)).toEqual([1, 2, 0, 2, 2, 3]);
-    expect(doc.selection).toBeNull();
+    expect(doc.selections.front).toBeNull();
   });
 
   it('in palette mode, maps to the nearest current colors and keeps the palette', () => {
@@ -119,16 +123,67 @@ describe('replaceDocumentEdit', () => {
 describe('importImageLayerEdit', () => {
   it('adds a palette-mapped layer at the top-left, cropped to the document', () => {
     const doc = createDocument(2, 2, palette);
-    const edit = importImageLayerEdit(doc, imageFrom(['rgb', '.rg', 'bbb']), 'pasted', 1);
+    const edit = importImageLayerEdit(doc, 'front', imageFrom(['rgb', '.rg', 'bbb']), 'pasted', 1);
     expect(edit.label).toBe('Add image as layer');
     applyEdit(doc, edit, 'redo');
-    expect(doc.layers.map((l) => l.name)).toEqual(['Layer 1', 'pasted']);
+    expect(doc.layers.slice(0, 2).map((l) => l.name)).toEqual(['Layer 1', 'pasted']);
     expect(Array.from(doc.layers[1].pixels)).toEqual([2, 3, 0, 2]);
   });
 
   it('leaves the rest of the layer transparent for smaller images', () => {
     const doc = createDocument(3, 2, palette);
-    applyEdit(doc, importImageLayerEdit(doc, imageFrom(['g']), 'dot', 1), 'redo');
+    applyEdit(doc, importImageLayerEdit(doc, 'front', imageFrom(['g']), 'dot', 1), 'redo');
     expect(Array.from(doc.layers[1].pixels)).toEqual([3, 0, 0, 0, 0, 0]);
+  });
+
+  it('sizes the layer for its side', () => {
+    // 3 wide, 2 tall, 4 deep: the left side is 4×2.
+    const doc = createDocument(3, 2, palette, 'test', 4);
+    const edit = importImageLayerEdit(doc, 'left', imageFrom(['rgbrg']), 'side', 0);
+    expect([edit.layer.facing, edit.layer.width, edit.layer.height]).toEqual(['left', 4, 2]);
+    expect(Array.from(edit.layer.pixels)).toEqual([2, 3, 1, 2, 0, 0, 0, 0]);
+  });
+});
+
+describe('setDepthEdit', () => {
+  /** A 2×1 document 3 deep with a pixel on the front (2 deep), back (1 deep, 1 out) and top (row 0, the back). */
+  function deepDoc(): PixelDocument {
+    const doc = createDocument(2, 1, palette, 'deep', 3);
+    const side = (facing: string) => doc.layers.find((l) => l.facing === facing)!;
+    setPixel(side('front'), 0, 0, 1);
+    side('front').extrusion[0] = packExtrusion(0, 2);
+    setPixel(side('back'), 1, 0, 2);
+    side('back').extrusion[1] = packExtrusion(1, 1);
+    setPixel(side('top'), 0, 0, 3);
+    doc.selections.top = rectMask({ x: 0, y: 0, width: 1, height: 1 });
+    doc.selections.front = rectMask({ x: 0, y: 0, width: 1, height: 1 });
+    return doc;
+  }
+
+  it('grows at the front, keeping the model where it is', () => {
+    const doc = deepDoc();
+    const before = buildVoxelModel(doc).columns;
+    applyEdit(doc, setDepthEdit(doc, 5)!, 'redo');
+    expect(doc.depth).toBe(5);
+    expect(doc.layers.find((l) => l.facing === 'top')!.height).toBe(5);
+    // Every run is two further back from the new front.
+    expect(buildVoxelModel(doc).columns).toEqual(before.map((runs) => runs?.map((run) => ({ ...run, start: run.start + 2, end: run.end + 2 }))));
+    expect(doc.selections.top).toBeNull();
+    expect(doc.selections.front).not.toBeNull();
+  });
+
+  it('shrinks at the front, cutting boxes short, and undoes', () => {
+    const doc = deepDoc();
+    const before = documentState(doc);
+    const edit = setDepthEdit(doc, 1)!;
+    applyEdit(doc, edit, 'redo');
+    const [front, back] = doc.layers;
+    expect(extrusionDepth(front.extrusion[0])).toBe(1);
+    // The back's box was 1 out from the front: now it's cut to the one cell left.
+    expect([extrusionOffset(back.extrusion[1]), extrusionDepth(back.extrusion[1])]).toEqual([0, 1]);
+    applyEdit(doc, edit, 'undo');
+    expect(documentState(doc)).toEqual(before);
+    expect(setDepthEdit(doc, 3)).toBeNull();
+    expect(() => setDepthEdit(doc, 0)).toThrow(RangeError);
   });
 });

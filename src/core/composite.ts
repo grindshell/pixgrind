@@ -1,23 +1,24 @@
-import type { Layer } from './layer.ts';
+import { planeSize, type Facing } from './facing.ts';
+import { inLayer, type Layer } from './layer.ts';
 import { TRANSPARENT, type Palette } from './palette.ts';
-import { inBounds, type PixelDocument } from './pixelDocument.ts';
+import type { PixelDocument } from './pixelDocument.ts';
 
 /**
- * Flattens the visible layers, bottom to top, into straight-alpha RGBA bytes
- * (the `ImageData` layout). Writes into `out` when given.
+ * Flattens the visible layers of one facing, bottom to top, into
+ * straight-alpha RGBA bytes (the `ImageData` layout) the size of its plane.
+ * Writes into `out` when given.
  */
-export function compositeRgba(
-  doc: PixelDocument,
-  out: Uint8ClampedArray = new Uint8ClampedArray(doc.width * doc.height * 4),
-): Uint8ClampedArray {
-  if (out.length !== doc.width * doc.height * 4) {
-    throw new RangeError('Output buffer size does not match the document');
+export function compositeRgba(doc: PixelDocument, facing: Facing, out?: Uint8ClampedArray): Uint8ClampedArray {
+  const { width, height } = planeSize(doc, facing);
+  out ??= new Uint8ClampedArray(width * height * 4);
+  if (out.length !== width * height * 4) {
+    throw new RangeError('Output buffer size does not match the plane');
   }
   out.fill(0);
   const lookup = paletteLookup(doc.palette);
 
   for (const layer of doc.layers) {
-    if (!layer.visible || layer.opacity <= 0) continue;
+    if (layer.facing !== facing || !layer.visible || layer.opacity <= 0) continue;
     const { pixels, opacity } = layer;
 
     for (let i = 0; i < pixels.length; i++) {
@@ -53,17 +54,16 @@ export function compositeRgba(
 }
 
 /**
- * The palette index the user sees at (x, y): the topmost visible layer with a
- * non-transparent pixel there that maps to a palette color. Transparent (0)
- * when there is none or (x, y) is out of bounds.
+ * The palette index the user sees at (x, y) of a facing's plane: the topmost
+ * visible layer of that facing with a non-transparent pixel there that maps
+ * to a palette color. Transparent (0) when there is none or (x, y) is off
+ * the plane.
  */
-export function visibleIndexAt(doc: PixelDocument, x: number, y: number): number {
-  if (!inBounds(doc, x, y)) return TRANSPARENT;
-  const offset = y * doc.width + x;
+export function visibleIndexAt(doc: PixelDocument, facing: Facing, x: number, y: number): number {
   for (let i = doc.layers.length - 1; i >= 0; i--) {
     const layer = doc.layers[i];
-    if (!layer.visible || layer.opacity <= 0) continue;
-    const index = layer.pixels[offset];
+    if (layer.facing !== facing || !layer.visible || layer.opacity <= 0 || !inLayer(layer, x, y)) continue;
+    const index = layer.pixels[y * layer.width + x];
     if (index !== TRANSPARENT && index <= doc.palette.colors.length) return index;
   }
   return TRANSPARENT;
@@ -75,16 +75,16 @@ export function visibleIndexAt(doc: PixelDocument, x: number, y: number): number
  * costs its own size, not the layer's.
  */
 export function layerThumbnailRgba(
-  doc: PixelDocument,
+  palette: Palette,
   layer: Layer,
   width: number,
   height: number,
 ): Uint8ClampedArray<ArrayBuffer> {
   const out = new Uint8ClampedArray(width * height * 4);
-  const lookup = paletteLookup(doc.palette);
-  const columns = Array.from({ length: width }, (_, x) => Math.floor(((x + 0.5) * doc.width) / width));
+  const lookup = paletteLookup(palette);
+  const columns = Array.from({ length: width }, (_, x) => Math.floor(((x + 0.5) * layer.width) / width));
   for (let y = 0; y < height; y++) {
-    const row = Math.floor(((y + 0.5) * doc.height) / height) * doc.width;
+    const row = Math.floor(((y + 0.5) * layer.height) / height) * layer.width;
     for (let x = 0; x < width; x++) {
       const color = lookup[layer.pixels[row + columns[x]]];
       const o = (y * width + x) * 4;

@@ -3,6 +3,7 @@ import type { Rgba } from '../core/color.ts';
 import {
   applyEdit,
   beginPixelEdit,
+  editedSide,
   editSetsFloating,
   followIndex,
   type Edit,
@@ -11,12 +12,13 @@ import {
   type PixelEditSession,
 } from '../core/edits.ts';
 import { MAX_DEPTH, MAX_OFFSET, MIN_DEPTH, type Shape } from '../core/extrusion.ts';
+import { planeExtent, planeSize, type Facing } from '../core/facing.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import type { Mask, SelectionMode } from '../core/mask.ts';
-import { buildVoxelModel, type VoxelModel } from '../core/model.ts';
+import { buildVoxelModel, otherSidesView, type IndexImage, type VoxelModel } from '../core/model.ts';
 import { TRANSPARENT } from '../core/palette.ts';
-import { findLayer, layerIndex, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
+import { facingLayers, findLayer, layerIndex, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
 import { CanvasRenderer, type BrushCursor } from '../render/canvasRenderer.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
@@ -29,6 +31,7 @@ import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
 import { createModelPane } from './modelPane.ts';
 import { createModelPanel } from './modelPanel.ts';
+import { createPerspectiveBar } from './perspectiveBar.ts';
 import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
 import { createBrushPanel } from './brushPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
@@ -45,7 +48,7 @@ export type ColorSlot = 'primary' | 'secondary';
 /** Views that open beside the canvas: the side view of one column, and the 3D model. */
 export type Pane = 'side' | 'model';
 
-/** What the Extrude tool paints: boxes `depth` deep, `offset` behind the picture plane. */
+/** What the Extrude tool paints: boxes `depth` deep, starting `offset` out from the far side toward the camera. */
 export interface ExtrudeSettings {
   offset: number;
   depth: number;
@@ -85,21 +88,33 @@ export class Editor {
   extrude: ExtrudeSettings = { offset: 0, depth: 2 };
   /** What the Diagonal tool and its "Apply" paint. Change via `setDiagonal`. */
   diagonal: DiagonalChoice = 'auto';
-  /** The document column the side view shows. Change via `setSliceColumn`. */
+  /** The column of the side being edited that the side view shows. Change via `setSliceColumn`. */
   sliceColumn = 0;
   /** Label the active layer's pixels with their depth on the canvas. Change via `setShowDepth`. */
   showDepth = false;
+  /** Show the rest of the model, seen from the side being edited, faintly under its layers. Change via `setShowGuide`. */
+  showGuide = true;
   /** Which panes are open beside the canvas. Change via `setPaneOpen`. */
   readonly panes: Record<Pane, boolean> = { side: false, model: false };
-  private activeLayerId: string;
-  /** Last known position of the active layer; used to pick a neighbor if it disappears. */
-  private activeIndexHint = 0;
+  /**
+   * The side of the model the canvas shows and edits (see `Facing`): its
+   * layers, selection and size. Change via `setFacing`.
+   */
+  facing: Facing = 'front';
+  /** The active layer per side. */
+  private readonly activeLayerIds: Partial<Record<Facing, string>> = {};
+  /** Last known position of each side's active layer among that side's layers; used to pick a neighbor if it disappears. */
+  private readonly activeIndexHints: Partial<Record<Facing, number>> = {};
   private stroke: PixelEditSession | null = null;
   private gestureActive = false;
   /** Path of a lasso being drawn, shown until it's released. */
   private lasso: readonly Point[] | null = null;
-  /** Document size the viewport was last fitted to. */
+  /** Plane size the viewport was last fitted to. */
   private fittedSize: { width: number; height: number };
+  /** The guide for the side being edited, built for `stamp`. */
+  private guideCache: { facing: Facing; stamp: number; image: IndexImage } | null = null;
+  /** Goes up whenever other sides may have changed, so the guide is rebuilt. Strokes on one side don't change it. */
+  private guideStamp = 0;
   /** History position when the document was last saved or opened as a project. */
   private savedPosition: object;
   /** Layer visibility is saved in projects but changes outside history, so it's tracked separately. */
@@ -117,9 +132,45 @@ export class Editor {
   constructor(doc: PixelDocument, canvas: HTMLCanvasElement) {
     this.doc = doc;
     this.renderer = new CanvasRenderer(canvas);
-    this.activeLayerId = doc.layers[0].id;
-    this.fittedSize = { width: doc.width, height: doc.height };
+    this.fittedSize = this.plane;
     this.savedPosition = this.history.position;
+  }
+
+  /** The size of the side being edited. */
+  get plane(): { width: number; height: number } {
+    return planeSize(this.doc, this.facing);
+  }
+
+  /** How far boxes on the side being edited can reach: the volume's size toward its camera. */
+  get extent(): number {
+    return planeExtent(this.doc, this.facing);
+  }
+
+  /** The selection on the side being edited. */
+  get selection(): Mask | null {
+    return this.doc.selections[this.facing];
+  }
+
+  /**
+   * Switches the canvas to another side of the model: its layers, selection
+   * and active layer. Unfinished multi-click work (a polygon) is dropped. A
+   * floating selection stays with its layer. Ignored mid-gesture.
+   */
+  setFacing(facing: Facing): void {
+    if (facing === this.facing || this.busy) return;
+    getTool(this.tool).deactivate?.(this);
+    this.facing = facing;
+    this.sliceColumn = Math.min(this.sliceColumn, this.plane.width - 1);
+    this.fitIfResized();
+    this.requestRender();
+    this.notify();
+  }
+
+  setShowGuide(on: boolean): void {
+    if (this.showGuide === on) return;
+    this.showGuide = on;
+    this.requestRender('view');
+    this.notify();
   }
 
   /**
@@ -154,19 +205,30 @@ export class Editor {
     return this.contentChanges;
   }
 
+  /** The layer being edited, on the side being edited. */
   get activeLayer(): Layer {
-    return findLayer(this.doc, this.activeLayerId) ?? this.doc.layers[0];
+    const id = this.activeLayerIds[this.facing];
+    const layer = id === undefined ? undefined : findLayer(this.doc, id);
+    if (layer?.facing === this.facing) return layer;
+    // Every side has a layer; until one is chosen, it's the topmost.
+    return facingLayers(this.doc, this.facing).at(-1)!;
   }
 
+  /** The active layer's position in `doc.layers` (all sides). */
   get activeLayerIndex(): number {
-    return Math.max(0, layerIndex(this.doc, this.activeLayerId));
+    return Math.max(0, layerIndex(this.doc, this.activeLayer.id));
   }
 
+  /** Makes a layer the active one, switching to its side. */
   selectLayer(layerId: string): void {
-    const index = layerIndex(this.doc, layerId);
-    if (index < 0) throw new Error(`Layer ${layerId} not found`);
-    this.activeLayerId = layerId;
-    this.activeIndexHint = index;
+    const layer = findLayer(this.doc, layerId);
+    if (!layer) throw new Error(`Layer ${layerId} not found`);
+    this.activeLayerIds[layer.facing] = layerId;
+    this.activeIndexHints[layer.facing] = facingLayers(this.doc, layer.facing).indexOf(layer);
+    if (layer.facing !== this.facing) {
+      this.setFacing(layer.facing);
+      return;
+    }
     // The brush outline hides over hidden layers.
     this.requestRender('view');
     this.notify();
@@ -241,9 +303,9 @@ export class Editor {
     this.notify();
   }
 
-  /** Shows column `x` in the side view (clamped to the document). */
+  /** Shows column `x` (of the side being edited) in the side view, clamped to it. */
   setSliceColumn(x: number): void {
-    const column = clampInteger(x, 0, this.doc.width - 1);
+    const column = clampInteger(x, 0, this.plane.width - 1);
     if (column === this.sliceColumn) return;
     this.sliceColumn = column;
     this.requestRender('view');
@@ -349,6 +411,7 @@ export class Editor {
     if (!layer || layer.visible === visible) return;
     layer.visible = visible;
     this.visibilityChanged = true;
+    this.guideStamp++;
     this.requestRender();
     this.notify();
   }
@@ -361,6 +424,8 @@ export class Editor {
     const layer = findLayer(this.doc, layerId);
     if (!layer) return;
     layer.opacity = opacity;
+    // A layer at 0% isn't modeled.
+    this.guideStamp++;
     this.requestRender();
   }
 
@@ -379,7 +444,7 @@ export class Editor {
    * recorded: follow up with `record(selectionChange(before, after, label))`.
    */
   previewSelection(selection: Mask | null): void {
-    this.doc.selection = selection;
+    this.doc.selections[this.facing] = selection;
     this.requestRender('view');
   }
 
@@ -406,7 +471,7 @@ export class Editor {
    */
   beginStroke(label: string, { clipToSelection = true } = {}): PixelEditSession {
     this.endStroke();
-    this.stroke = beginPixelEdit(this.doc, this.activeLayer, label, clipToSelection ? this.doc.selection : null);
+    this.stroke = beginPixelEdit(this.activeLayer, label, clipToSelection ? this.selection : null);
     return this.stroke;
   }
 
@@ -447,13 +512,25 @@ export class Editor {
     // Undoing underneath an in-progress gesture would interleave the two edits.
     if (this.busy) return;
     const edit = this.history.undo(this.doc);
-    if (edit) this.documentChanged(edit, 'undo');
+    if (!edit) return;
+    this.documentChanged(edit, 'undo');
+    this.showEditedSide(edit);
   }
 
   redo(): void {
     if (this.busy) return;
     const edit = this.history.redo(this.doc);
-    if (edit) this.documentChanged(edit, 'redo');
+    if (!edit) return;
+    this.documentChanged(edit, 'redo');
+    this.showEditedSide(edit);
+  }
+
+  /** After undo or redo: switches to the side the edit changed, if it's another, so the change shows. */
+  private showEditedSide(edit: Edit): void {
+    const where = editedSide(this.doc, edit);
+    if (!where || where.facing === this.facing) return;
+    if (where.layerId) this.selectLayer(where.layerId);
+    else this.setFacing(where.facing);
   }
 
   /** Subscribes to editor state changes (not per-pixel edits). Returns an unsubscribe function. */
@@ -481,9 +558,11 @@ export class Editor {
       this.compositeStale = false;
       this.renderer.render(
         this.doc,
+        this.facing,
         this.viewport,
         {
           reference: this.reference,
+          guide: this.showGuide ? this.guide() : null,
           brush: this.brushCursor(),
           lasso: this.lasso,
           slice: this.panes.side ? this.sliceColumn : null,
@@ -504,21 +583,36 @@ export class Editor {
     return { ...this.pointer, mask: brushMask(this.brush) };
   }
 
-  /** Fits the whole document in view at the largest whole-number zoom. */
+  /** The guide for the side being edited, rebuilt only when other sides may have changed. */
+  private guide(): IndexImage {
+    const cached = this.guideCache;
+    if (cached?.facing === this.facing && cached.stamp === this.guideStamp) return cached.image;
+    const image = otherSidesView(this.doc, this.facing);
+    this.guideCache = { facing: this.facing, stamp: this.guideStamp, image };
+    return image;
+  }
+
+  /** Fits the side being edited in view at the largest whole-number zoom. */
   fitToView(): void {
     const { width, height } = this.renderer.viewSize;
-    if (width > 0 && height > 0) this.viewport = fitViewport(this.doc.width, this.doc.height, width, height);
+    const plane = this.plane;
+    if (width > 0 && height > 0) this.viewport = fitViewport(plane.width, plane.height, width, height);
     this.requestRender('view');
+  }
+
+  /** Refits the view when the side being edited has a different size than it was fitted to (e.g. an opened image). */
+  private fitIfResized(): void {
+    const plane = this.plane;
+    if (plane.width === this.fittedSize.width && plane.height === this.fittedSize.height) return;
+    this.fittedSize = plane;
+    this.fitToView();
+    this.sliceColumn = Math.min(this.sliceColumn, plane.width - 1);
   }
 
   private documentChanged(edit: Edit, direction: EditDirection): void {
     this.documentRevision++;
-    // A different size (e.g. an opened image) needs a fresh view.
-    if (this.doc.width !== this.fittedSize.width || this.doc.height !== this.fittedSize.height) {
-      this.fittedSize = { width: this.doc.width, height: this.doc.height };
-      this.fitToView();
-      this.sliceColumn = Math.min(this.sliceColumn, this.doc.width - 1);
-    }
+    this.guideStamp++;
+    this.fitIfResized();
     this.syncActiveLayer();
     // The paint colors follow their colors when they're renumbered, and stay
     // valid when the palette shrinks.
@@ -531,12 +625,13 @@ export class Editor {
 
   /** Keeps the active layer valid after layers are added, removed, or moved. */
   private syncActiveLayer(): void {
-    let index = layerIndex(this.doc, this.activeLayerId);
+    const layers = facingLayers(this.doc, this.facing);
+    let index = layers.findIndex((layer) => layer.id === this.activeLayerIds[this.facing]);
     if (index < 0) {
-      index = Math.min(this.activeIndexHint, this.doc.layers.length - 1);
-      this.activeLayerId = this.doc.layers[index].id;
+      index = Math.min(this.activeIndexHints[this.facing] ?? layers.length - 1, layers.length - 1);
+      this.activeLayerIds[this.facing] = layers[index].id;
     }
-    this.activeIndexHint = index;
+    this.activeIndexHints[this.facing] = index;
   }
 
   private notify(): void {
@@ -555,7 +650,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
 
   const editor = new Editor(doc, canvas);
   const filePanel = createFilePanel(editor, stage);
-  stage.append(canvas);
+  stage.append(canvas, createPerspectiveBar(editor));
   sidebar.append(
     title,
     createHistoryControls(editor),

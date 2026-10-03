@@ -18,10 +18,11 @@ Core features:
   trace over. References are never part of the artwork.
 - **Import/export** of common image formats (PNG, JPG, WebP, …) plus a native
   project format that preserves layers and palette.
-- **3D models** from the pixel art: each pixel can be extruded into a box of
-  any depth, starting at any offset behind the picture plane. A side view
-  edits one column's depth directly, a 3D view shows the model, and it
-  exports as `.glb`.
+- **3D models** from the pixel art: pixel art can be drawn on any of the six
+  sides of the model (front, back, left, right, top, bottom), and each pixel
+  extruded into a box that grows from the far side toward the camera looking
+  at that side. A side view edits one column's depth directly, a 3D view
+  shows the model, and it exports as `.glb`.
 
 ## Status
 
@@ -99,8 +100,9 @@ Built so far:
     reference image embedded.
   - Unsaved changes show as `•` in the window title, and production builds
     ask before closing the tab.
-  - Add an image as a layer.
-  - Export PNG/JPEG/WebP at 1–16×.
+  - Add an image as a layer (on the side being edited).
+  - Export PNG/JPEG/WebP at 1–16× (the side being edited; file names get
+    `-<side>` for all but the front).
 - Reference panel: load an image of any size as a tracing guide, fitted to
   the canvas.
   - Show/hide, above/below the artwork, smoothing, opacity, scale (with
@@ -108,33 +110,42 @@ Built so far:
   - Move mode: drag to position it and wheel to scale it around the pointer.
   - Never part of pixel data or exports, and not undoable.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
-  Ctrl+Shift+Z and Ctrl+Y.
-- Layers panel: thumbnails, select, show/hide, rename (double-click), add,
-  duplicate, delete, move up/down, merge down, opacity slider. All undoable
-  except show/hide.
+  Ctrl+Shift+Z and Ctrl+Y. Undoing or redoing a change on another side of
+  the model switches the canvas there.
+- Layers panel: the side being edited's layers, with thumbnails, select,
+  show/hide, rename (double-click), add, duplicate, delete, move up/down,
+  merge down, opacity slider. All undoable except show/hide.
+- Perspective bar over the canvas: Front, Back, Left, Right, Top, Bottom
+  (keys 1–6) pick the side of the model the canvas edits (see Sides below),
+  with its size, and a Guide toggle that shows the other sides' model
+  faintly under its layers.
 - 3D model (see 3D model below):
-  - Every painted pixel has an extrusion: depth 1–255, offset 0–255 and a
-    shape, a square or a diagonal half with one corner cut off (default a
-    square 1 deep at offset 0). Moves, floats, copy/paste, merge down, undo
-    and project files carry it with the pixel.
-  - 3D model panel: Side and 3D view toggles, the Extrude tool's depth and
+  - Every painted pixel has an extrusion: depth 1–1024, offset 0–1023 (out
+    from the far side) and a shape, a square or a diagonal half with one
+    corner cut off (default a square 1 deep against the far side). Moves,
+    floats, copy/paste, merge down, undo and project files carry it with
+    the pixel.
+  - 3D model panel: Side and 3D view toggles, the model's depth (Model
+    depth: grows or shrinks at the front), the Extrude tool's depth and
     offset with Apply depth (to the selection or layer), the Diagonal
     tool's shape (Auto, a corner, or square) with Apply shape, depth labels
     and diagonal cuts on the canvas (labels at zoom 12× or more), and GLB
     export at a chosen size per pixel: watertight by default (each color a
     closed, manifold solid), or lean (fewest faces).
   - Extrude tool (D): paints the panel's depth and offset onto painted
-    pixels with the brush; right-click resets them. Shapes stay. Pressing
-    also picks the side view's column.
+    pixels with the brush, so boxes grow toward the camera (cut short at
+    the far side of the volume); right-click resets them. Shapes stay.
+    Pressing also picks the side view's column.
   - Diagonal tool (Shift+D): paints the panel's shape onto painted pixels,
     keeping depths; right-click makes them square. Auto cuts the corner
     between a pixel's two empty sides (the steps of a staircase edge, which
     become a smooth 45° slope) and leaves other pixels. While it's active
     the canvas shades the corners diagonal pixels cut off.
-  - Side view pane: one column from the right, rows level with the canvas.
-    Painting a cell adds that depth to the pixel's box (or makes a new
-    pixel); transparent (right-click by default) takes it away. Alt+click
-    picks the cell's color. ‹ › change the column.
+  - Side view pane: one column of the side being edited, seen from that
+    side's right, rows level with the canvas, the camera's side on the
+    left. Painting a cell adds that depth to the pixel's box (or makes a
+    new pixel); transparent (right-click by default) takes it away.
+    Alt+click picks the cell's color. ‹ › change the column.
   - 3D view pane: WebGL 2, drag to orbit, right/middle/Shift-drag to pan,
     wheel to zoom, double-click or Reset view to frame the model.
   - Panes open beside the canvas; drag their left edge to resize.
@@ -149,14 +160,18 @@ Follow-ups:
     vertices in lean exports too (only between faces facing the same way,
     since they keep normals).
   - Watertight export runs on the main thread: seconds for large noisy
-    documents (a 256² noise test takes ~2 s). A worker would keep the UI
+    documents (a 256² noise test takes ~2.5 s). A worker would keep the UI
     responsive.
   - More diagonal slopes: 2:1 and 1:2 (common in pixel art, isometric
     especially). They cut across pixel pairs, which quarters can't
     describe, so they need finer pixel shapes and partial side faces.
-  - Slopes in depth: a box whose front or back end tilts (ramps in the side
-    view), e.g. for noses and roofs.
-  - A wider side view: edit along rows (top view) as well as columns.
+  - Where diagonal pixels from sides with different axes overlap in one
+    voxel, the upper keeps only part of the lower (see `overlay`); exact
+    would need voxels split both ways (24 tetrahedra).
+  - The side view shows columns only; rows (seen from below) would help on
+    wide sides.
+  - The reference image is shared by every side; one per side would let
+    each trace its own view.
   - Layer opacity in 3D (today only visibility counts).
 - Files:
   - Save in place with the File System Access API where available (today
@@ -234,6 +249,7 @@ src/
   main.ts        entry point; mounts the editor
   style.css      global styles (dark theme, CSS custom properties on :root)
   core/          pure logic, no DOM: color, palette, layer, pixelDocument,
+                 facing (the model's sides, directions, plane geometry),
                  composite (+ visibleIndexAt), raster (line, rect, shape
                  constraints), brush (footprints, brush lines and
                  rectangles), pixelPerfect (L-corner removal for 1px
@@ -242,8 +258,8 @@ src/
                  combining, outlines), floodFill (+ colorRegion), image (RGBA
                  ↔ indices, upscale, flatten), extrusion (packed extrusions
                  and shapes, cells, side view cell edits, autoShape), model
-                 (voxel runs by quarter, mesh), meshWeld (manifold
-                 welding for watertight export),
+                 (voxel runs by quarter, views and slices, mesh), meshWeld
+                 (manifold welding for watertight export),
                  edits (undoable changes), layerEdits / selection /
                  paletteEdits / documentEdits / extrusionEdits (edit
                  constructors), history
@@ -251,7 +267,7 @@ src/
                  ReferenceImage type, camera (orbit camera and matrices),
                  ModelRenderer (WebGL 2), SideRenderer
   io/            import/export and persistence: projectFile (.pixgrind
-                 serialize/parse), bytes (base64, zlib, 16-bit LE), glb (3D
+                 serialize/parse), bytes (base64, zlib, 16/32-bit LE), glb (3D
                  export), paletteFormats (pure
                  text parsers/serializers), paletteLibrary (saved palettes
                  over a storage interface), imageCodec (decode/encode via
@@ -264,8 +280,9 @@ src/
                  (copy/cut/paste events and the system clipboard), brush and
                  selection panels, history controls, file panel, palette and
                  palettes (library) panels, layers panel, reference panel (+
-                 loadReferenceFile), 3D model panel (modelPanel), side and 3D
-                 panes (sidePane, modelPane, on paneFrame), throttle
+                 loadReferenceFile), 3D model panel (modelPanel), perspective
+                 bar (perspectiveBar), side and 3D panes (sidePane,
+                 modelPane, on paneFrame), throttle
                  (adaptiveThrottle), DOM helpers (dom.ts) and inline SVG
                  icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
@@ -355,15 +372,55 @@ storage without updating this section and the palette-swap design.
     in reading order.
   - More than 255 colors is an error, never a silent truncation.
 
+### Sides (facings)
+
+- A document is a model's volume, `width` × `height` × `depth` (x left to
+  right, y top to bottom as on the front, z front to back), and its layers
+  are pixel art drawn on one of its six sides: each layer has a `facing`
+  (`core/facing.ts`: front, back, left, right, top, bottom) and is the size
+  of that side's plane (`planeSize`: front/back W×H, left/right D×H,
+  top/bottom W×D), stored as `layer.width`/`height`.
+- A facing's frame (`facingFrame`) says which way its columns (`right`),
+  rows (`down`) and boxes (`toward` its camera) run on the volume, as
+  `Direction`s (±x, ±y, ±z). Each is a proper rotation of the front's, so
+  the back is mirrored (its column 0 is the model's right), the top's row 0
+  is the back, and the right side's column 0 is the front, as cameras
+  there see them. `facingVoxel` maps a pixel and a box cell to a voxel,
+  `stepsAlong` back.
+- Every facing has at least one layer: `createDocument` makes one per
+  side, deleting the last of a side is refused (`canRemoveLayer`), and
+  project files without some side get an empty layer for it.
+- The editor edits one side at a time (`Editor.facing`, `setFacing`; keys
+  1–6 and the perspective bar). The canvas shows that side's layers only,
+  plus the guide: the model of the other sides' layers as its camera sees
+  it (`otherSidesView`), faint under them. The guide is rebuilt only when
+  other sides may have changed (`guideStamp`: recorded edits, visibility,
+  opacity), not on every stroke. `Editor.plane` and `extent` are the side's
+  size and how far its boxes reach.
+- Everything 2D works per side: plane-sized layers, the side's selection
+  (`doc.selections[facing]`), layer lists and moves (the next layer of the
+  same side, `neighborLayerIndex`), merges, copy/paste, image import and
+  export. The float belongs to its layer and stays when switching sides; it
+  shows only on its side.
+- Changing the depth (`setDepthEdit`, a `document` edit) grows or shrinks
+  the volume at the front, so the model stays put: front boxes keep their
+  offsets, back ones move out, top/bottom/side layers gain or lose rows or
+  columns at the front, and boxes past the front are cut short. Selections
+  of the resized sides and the float are dropped.
+- Undo and redo switch to the side an edit changed (`editedSide`), so the
+  change shows.
+
 ### Layers
 
-- `doc.layers` is ordered bottom to top (the panel shows it reversed).
-  Composite with per-layer visibility and opacity (`compositeRgba`,
-  straight-alpha "source over"). A document always has at least one layer.
+- `doc.layers` is ordered bottom to top (the panel shows the side being
+  edited's, reversed). Upper layers win where their boxes overlap in 3D,
+  whatever their sides. Composite one side with per-layer visibility and
+  opacity (`compositeRgba(doc, facing)`, straight-alpha "source over").
 - Refer to layers by **id**, not array position, anywhere the reference
   outlives the current call (edits, editor state, UI callbacks).
-- The editor tracks the active layer by id (`Editor.selectLayer`). If an edit
-  or undo removes it, the editor falls back to the layer at its old position.
+- The editor tracks the active layer per side by id (`Editor.selectLayer`,
+  which switches to the layer's side). If an edit or undo removes it, the
+  editor falls back to the side's layer at its old position.
 - Draw operations target the editor's active layer only, and are blocked
   while that layer is hidden (the stage shows a not-allowed cursor).
 - Merge down (`mergeDownEdit`) requires both layers visible and at 100%
@@ -388,15 +445,17 @@ storage without updating this section and the palette-swap design.
 - `ReferenceImage` (`render/referenceImage.ts`):
   - The decoded `bitmap` for drawing, plus the original `source` Blob so
     project files can embed it.
-  - Image size, and placement in **document coordinates**: `x`/`y` of the
-    top-left and `scale` in document px per image px. These are fractional,
-    since references are guides rather than pixels.
+  - Image size, and placement in **document coordinates** (of whichever
+    side is shown: one reference serves all): `x`/`y` of the top-left and
+    `scale` in document px per image px. These are fractional, since
+    references are guides rather than pixels.
   - `opacity`, `visible`, `above`, `smooth`.
 
   Placement math is pure, in `core/referencePlacement.ts`: fit, scale around
   an anchor, center, and the logarithmic slider mapping. Scale is clamped to
   0.01–64.
-- Rendering order: checkerboard, then the reference if below, then artwork,
+- Rendering order: checkerboard, then the reference if below, then the
+  guide (other sides' model, faint), then artwork,
   then the reference if above, then extrusions (diagonal cuts and depth
   labels), then the side view's
   column band, then floating pixels off the document, then
@@ -443,9 +502,10 @@ storage without updating this section and the palette-swap design.
   - `Editor.onRender(listener)` runs after each canvas render with whether
     content changed. The side and 3D panes redraw from there, so they follow
     the canvas without their own subscriptions to every change.
-- `render(doc, viewport, overlays)` takes what isn't document data as
-  `RenderOverlays`: the reference image, the brush cursor, the lasso, the
-  side view's column (`slice`) and the layer whose extrusions to show
+- `render(doc, facing, viewport, overlays)` draws one side's plane. It
+  takes what isn't document data as
+  `RenderOverlays`: the reference image, the guide, the brush cursor, the
+  lasso, the side view's column (`slice`) and the layer whose extrusions to show
   (`extrusions`: the corners diagonal pixels cut off, shaded from zoom 4×,
   and with `depths` the depth labels from zoom 12×). They're drawn into a
   cached canvas, redrawn only when the content, layer or view changes:
@@ -540,10 +600,12 @@ storage without updating this section and the palette-swap design.
 
 ### Selection
 
-- `doc.selection` is a `Mask` (always inside the document) or null. It lives
-  on the document, not the editor, so selection changes are undoable and a
-  move restores both pixels and outline in one step. It isn't image data, so
-  don't export it.
+- Each side has its own selection: `doc.selections[facing]` is a `Mask`
+  (always inside that side's plane) or null, and `selection` edits name
+  their side. It lives on the document, not the editor, so selection
+  changes are undoable and a move restores both pixels and outline in one
+  step. It isn't image data, so don't export it. `Editor.selection` is the
+  side being edited's.
 - Masks (`core/mask.ts`) are sets of pixels: a `rect` plus `bits` (one byte
   per pixel of the rect), or `bits: null` for the whole rect.
   - Always normalized: never empty (null means no pixels), `rect` is the
@@ -597,11 +659,11 @@ storage without updating this section and the palette-swap design.
   - Lifting and dropping therefore change no pixels. Moving (`moveFloating`)
     puts `under` back, then stamps at the new place, recording the new
     `under`. Transparent float pixels cover nothing.
-  - `rect` may extend past the document. `doc.selection` is kept as the
-    float's mask clipped to the document (null when entirely off it), so
-    selection clipping still works. The renderer outlines the float's whole
-    mask instead, and draws off-document float pixels at half their layer's
-    opacity.
+  - `rect` may extend past the layer. The selection of the float's side is
+    kept as the float's mask clipped to the layer (null when entirely off
+    it), so selection clipping still works. The renderer outlines the
+    float's whole mask instead (on its side only), and draws off-layer float
+    pixels at half their layer's opacity.
   - Edits: a `floating` edit sets or clears the float. `moveSelectionEdit`
     (nudge) lifts if needed and batches pixels + floating + selection.
     `dropFloatingEdit` and `deleteFloatingEdit` (Delete key: uncovers
@@ -760,10 +822,13 @@ storage without updating this section and the palette-swap design.
 ### 3D model
 
 - **Extrusions** (`core/extrusion.ts`): each layer has `extrusion: Uint32Array`
-  parallel to `pixels`, packed as `shape << 16 | offset << 8 | depth`. A
-  pixel's box fills z from `offset` to `offset + depth` (z grows away from
-  the viewer, into the picture). Depth is 1–255, offset 0–255.
-  - `Shape` is how the box looks from the front: `SQUARE` (0), or the right
+  parallel to `pixels`, packed as `shape << 21 | offset << 11 | depth`. A
+  pixel's box grows **toward its layer's camera**: it fills the cells
+  `offset` up to `offset + depth`, counted from the far side of the volume
+  (the side away from the camera; see Sides). Depth is 1–1024, offset
+  0–1023. Boxes reaching past the volume are cut at its side
+  (`fitExtrusion`; the model does it too, for any that slip through).
+  - `Shape` is how the box looks to its camera: `SQUARE` (0), or the right
     triangle left when one corner is cut off along the diagonal
     (`CUT_TOP_LEFT` … `CUT_BOTTOM_LEFT`, 1–4 clockwise). `withBox` and
     `withShape` change one part and keep the other; the Extrude tool, Apply
@@ -772,50 +837,75 @@ storage without updating this section and the palette-swap design.
     exactly two empty sides that meet (off the document counts as empty),
     else null.
   - Only meaningful where the pixel is painted. `setPixel` resets it to
-    `DEFAULT_EXTRUSION` (1 deep at offset 0) when painting where there was
-    no pixel, so an erased pixel's box never comes back. Writing a
-    transparent cell leaves the extrusion alone.
+    `DEFAULT_EXTRUSION` (1 deep against the far side) when painting where
+    there was no pixel, so an erased pixel's box never comes back. Writing
+    a transparent cell leaves the extrusion alone.
   - A `Cell` is index and extrusion as one number
-    (`extrusion * 256 + index`), for code that moves whole pixels: float
-    stamping, pastes, the side view.
-- **Gaps along z** come from layers: each layer gives a pixel one box, so
-  stacking layers puts several boxes behind the same pixel, with gaps
-  between. There's no list of boxes per pixel.
-- **Model** (`core/model.ts`, pure):
-  - Each pixel is split by both diagonals into four **quarters** (`TOP`,
-    `RIGHT`, `BOTTOM`, `LEFT`), each touching one side. A square fills all
-    four, a diagonal half two. A `Run` keeps a palette index per quarter
-    (`Quarters`, packed bytes, 0 where empty), so culling between pixels
-    and diagonal halves is exact, and a diagonal pixel over a square on a
-    lower layer shows the square in its cut-off half.
+    (`extrusion * 256 + index`, under 2³²), for code that moves whole
+    pixels: float stamping, pastes, the side view.
+- **Gaps** come from layers: each layer gives a pixel one box, so stacking
+  layers puts several boxes behind the same pixel, with gaps between.
+  There's no list of boxes per pixel.
+- **Model** (`core/model.ts`, pure), in the volume's coordinates (x right,
+  y down, z front to back):
+  - A box is a line of voxels along its layer's axis (z for the front and
+    back, y for the top and bottom, x for the sides). Each voxel is split
+    by both diagonals across one axis, its **split axis**, into four
+    **quarters**, each touching one side (`QUARTER_DIRECTIONS`: for z the
+    front's top, right, bottom, left; for y and x the top's and the right
+    side's, as their cameras see them). A square fills all four, a diagonal
+    half two (a layer's shape maps to quarters through its frame,
+    `SHAPE_BYTES`). `Content` is a split axis plus a palette index per
+    quarter (`Quarters`, packed bytes, 0 where empty; the axis is z when all
+    four are one color), so culling between pixels and diagonal halves is
+    exact, and a diagonal pixel over a square on a lower layer shows the
+    square in its cut-off half.
   - `buildVoxelModel` turns visible layers (opacity above 0) into sorted
-    runs per pixel. Upper layers win where boxes overlap, as in 2D, in the
-    quarters they fill; touching runs with the same quarters merge. Fully
-    transparent palette colors are left out; layer opacity isn't modeled.
-    `pixelRuns` builds one pixel's runs (the side view's column) without the
-    rest. `seenFromRight` is what the side view shows in each half of a cell.
+    runs along z per front pixel (`columns`). Front and back boxes are one
+    run each; top, bottom and side boxes a voxel per column they cross,
+    gathered into runs. Upper layers win where boxes overlap, as in 2D, in
+    the quarters they fill (`overlay`); quarters split across different
+    axes don't line up, so then the lower keeps only the quarters on the
+    sides both split alike. Touching runs with the same content merge.
+    Fully transparent palette colors are left out; layer opacity isn't
+    modeled. Empty layers are skipped quickly (most sides are empty).
+  - `voxelSampler` gives any voxel's content without building the model,
+    `sliceOf` a whole slice behind one column of a side (the side view's,
+    fresh on every change), `viewModel` the model seen from a side, two
+    halves per pixel (the side view's backdrop), `otherSidesView` the
+    canvas's guide, and `seenFrom` what a viewer on a side sees in a
+    voxel's upper or lower half.
   - `buildMesh` makes faces per palette color (a `MeshPart` each). Faces
     covered by a neighbor that's opaque or the same color are dropped, so
     translucent colors show what's behind them but no faces inside
-    themselves. Side faces are cut into the stretches nothing covers, and
-    belong to the quarter on that side. Between two quarters of a pixel
-    that differ, slanted faces (normals at 45°) run along the half-diagonal.
-    Front and back faces that aren't whole squares are triangles (a half of
-    one color is one triangle).
+    themselves. A voxel's side is whole, belonging to the quarter touching
+    it, unless the voxel is split across that side's axis: then it's four
+    triangles, one per quarter along each edge (`faceLabels`; halves of one
+    color become one triangle). Side faces are cut into the stretches of z
+    where the neighboring column doesn't change. Between two quarters of a
+    voxel that differ, slanted faces (normals at 45°) run along the
+    half-diagonal; inside runs split across x or y, consecutive voxels also
+    get faces between them where their touching quarters differ
+    (`betweenVoxels`).
   - Faces of one color side by side in one plane merge into rectangles
-    (`FacePlane`, one per facing and plane): spans join along a row, and a
-    rectangle grows into the next row while that row repeats its span
-    exactly. Slanted planes are the 45° lines through pixel corners, with a
-    row per half-diagonal, so a staircase's slope is one quad. Linear time,
-    emitting each rectangle as soon as it closes (keeping them all made
-    garbage collection dominate). Not the fewest rectangles possible, but a
-    flat area or a straight edge is one quad. Merged quads meet at
-    T-junctions, which hasn't shown seams. Triangles aren't merged.
-  - The test checks the mesh piece by piece (each quarter's front and back,
-    side and half-diagonals) against a voxel-by-voxel reference on random
-    documents with diagonals: every exposed piece covered exactly once,
-    hidden ones not at all, and no extra area. Keep it when changing the
-    mesh.
+    (`FacePlane`, one per family, normal and plane; see the table above
+    `FACE_X`): spans join along a row, and a rectangle grows into the next
+    row while that row repeats its span exactly. Slanted planes are the 45°
+    lines through voxel corners across a split axis, with a row (or span)
+    per half-diagonal, so a staircase's slope is one quad whichever side it
+    was drawn on. Linear time, emitting each rectangle as soon as it closes
+    (keeping them all made garbage collection dominate), except slants
+    split across x or y, which arrive out of order and are sorted first
+    (they come only from diagonals on the top, bottom and sides). Corners
+    come from `PLANE_PLACES`, and quads and triangles are wound from their
+    normal, so no case can get it wrong. Not the fewest rectangles
+    possible, but a flat area or a straight edge is one quad. Merged quads
+    meet at T-junctions, which hasn't shown seams. Triangles aren't merged.
+  - The test checks the mesh piece by piece (each side's four triangles and
+    each half-diagonal of every voxel, worked out from the model's content)
+    against the mesh on random documents with layers on every side and
+    diagonals: every exposed piece covered exactly once, hidden ones not at
+    all, and no extra area. Keep it when changing the mesh.
   - **Watertight** (`buildMesh(…, { watertight: true })`, for export): only
     the same color hides a face, so every color is a closed shell (where two
     colors touch, both have a face, back to back inside the model). Each
@@ -826,8 +916,18 @@ storage without updating this section and the palette-swap design.
     triangles); and where a shell touches itself along an edge or at a
     point, each sheet gets its own vertices (triangles around such an edge
     are paired by angle, solid wedge by solid wedge, via union-find over
-    triangle corners). Result: each part a closed 2-manifold with shared
-    vertices and `normals: null`.
+    triangle corners). Sheets paired apart along an edge can still be one
+    surface around both its ends (a solid pinched to the edge but whole past
+    it); then each further sheet gets its own vertex in the edge's middle.
+    Result: each part a closed 2-manifold with shared vertices and
+    `normals: null`.
+  - Pinches hide under merged faces: where a quarter meets the edge of a
+    face only at its corner (a slanted face ends there), the solid under a
+    face that spans the edge is two pieces touching along a line, and the
+    weld would need an edge inside a face. So watertight meshes don't merge
+    a color's faces across the edges its slants end at (`slantEnds`,
+    `mergeRules`); a voxel's two half-diagonals and slants along their split
+    axis still merge.
   - Why a shell per color: glTF needs a primitive per material, and
     Blender's glTF import keeps each primitive's vertices separate unless
     "Merge Vertices" is ticked (which in turn would fuse sheets that only
@@ -835,9 +935,9 @@ storage without updating this section and the palette-swap design.
     check manifoldness (each edge once each way, one fan per vertex) and each
     color's enclosed volume on random documents.
   - Mesh coordinates follow glTF: y up, front faces +z, one unit per pixel,
-    x centered on the document, y = 0 at its bottom edge, z = 0 at the
-    picture plane (boxes go toward -z). Triangles are counter-clockwise from
-    outside. `zAt(depth)` avoids -0.
+    the volume centered on x and z with y = 0 at its bottom (so a sprite on
+    the front of a deep volume sits behind the origin). Triangles are
+    counter-clockwise from outside. Normals use `0 - v` to avoid -0.
 - `Editor.voxelModel` builds the model on demand and caches it per
   `contentVersion`, so the side and 3D views share one build. Both rebuild
   derived data through `adaptiveThrottle` (`ui/throttle.ts`): every frame
@@ -855,19 +955,24 @@ storage without updating this section and the palette-swap design.
   floating bar (title, controls, close), and a resize handle on its left
   edge. They draw only while open.
 - **Side view** (`ui/sidePane.ts`, `render/sideRenderer.ts`): column
-  `Editor.sliceColumn` seen from the right (front on the left).
+  `Editor.sliceColumn` of the side being edited, seen from that side's
+  right: the camera's side on the left, the far side (drawn as a line) on
+  the right, as many cells as the volume reaches. Cell `s` from the left is
+  box cell `extent - 1 - s`.
   - It shares the canvas's zoom and vertical offset, so rows line up with
     the canvas; it has its own horizontal offset. Its wheel zooms the
     shared viewport; middle-drag pans both.
-  - Cells under the column show at full color, the rest of the model
-    (rightmost box per cell) faintly behind; the active layer's boxes in the
-    column are outlined. Each cell's upper and lower half show what a viewer
-    on the right sees there (they differ only for diagonal pixels), and
-    Alt+click picks the half under the pointer.
-  - Painting: `extendCell` (grow the box to reach z, or a new pixel one deep)
-    with a color, `carveCell` with transparent (a box has no gaps, so it's
-    trimmed from the nearer end; the back on a tie; a one-deep box becomes
-    transparent). One stroke per drag, `plotLine` between cells.
+  - Cells in the slice (`sliceOf`) show at full color, the rest of the
+    model (`viewModel`, from the throttled model) faintly behind; the active
+    layer's boxes in the column are outlined. Each cell's upper and lower
+    half show what a viewer on the right sees there (`seenFrom`; they
+    differ only for diagonal pixels), and Alt+click picks the half under
+    the pointer.
+  - Painting: `extendCell` (grow the box to reach the cell, or a new pixel
+    one deep) with a color, `carveCell` with transparent (a box has no
+    gaps, so it's trimmed from the nearer end; the far end on a tie, keeping
+    the end the camera sees; a one-deep box becomes transparent). One
+    stroke per drag, `plotLine` between cells.
 - **3D view** (`ui/modelPane.ts`, `render/modelRenderer.ts`,
   `render/camera.ts`): WebGL 2, created on first open (a message replaces
   it when unavailable). Flat shading from a fixed light, with each
@@ -875,8 +980,8 @@ storage without updating this section and the palette-swap design.
   derivatives of the position (so normals aren't uploaded and shared
   vertices would shade flat too), opaque parts first
   then translucent ones blended without depth writes, a floor grid and the
-  picture plane's outline. An orbit camera (yaw, pitch, distance, target);
-  framed by `fitCamera` on first build, on a document size change, on
+  volume's outline. An orbit camera (yaw, pitch, distance, target);
+  framed by `fitCamera` on first build, on a volume size change, on
   Reset view and on double-click, otherwise kept across edits. Drawn only
   when something changes.
 - **GLB export** (`io/glb.ts`, pure): one mesh, a primitive and material per
@@ -907,16 +1012,20 @@ storage without updating this section and the palette-swap design.
     255 colors is an error).
   - `palette`: nearest colors of the current palette (`indexImageToPalette`).
 
-  Fully transparent pixels become index 0. Documents are capped at
-  `MAX_DOCUMENT_SIZE` (1024) per side. Dropping an image file on the stage
-  opens it with the panel's color mode.
+  The image becomes the front's layer, in a volume as deep as it's wide or
+  tall (`defaultDepth`), with an empty layer on every other side. Fully
+  transparent pixels become index 0. Documents are capped at
+  `MAX_DOCUMENT_SIZE` (1024) per side, depth too. Dropping an image file on
+  the stage opens it with the panel's color mode.
 - **Add as layer** (`importImageLayerEdit`): nearest current-palette colors,
-  placed at the top-left, cropped to the document. It's a `layer-add` edit.
-- When the document size changes (open, or undoing one), the editor refits
-  the view (`Editor.fitToView`). `doc.name` (from the file name) drives export
-  file names and the window title.
-- Export (`renderExport`):
-  - Flatten the visible layers (`documentImage`), then `upscaleImage`
+  placed at the top-left of the side being edited, cropped to it. It's a
+  `layer-add` edit.
+- When the size of the side being edited changes (open, a depth change,
+  switching sides, or undoing one), the editor refits the view
+  (`Editor.fitToView`). `doc.name` (from the file name) drives export file
+  names and the window title.
+- Export (`renderExport`, of one side, the one being edited):
+  - Flatten its visible layers (`documentImage`), then `upscaleImage`
     (integer nearest-neighbor, 1–16×), then `encodeImage`.
   - PNG is lossless with alpha. JPEG is flattened onto a chosen background
     (`flattenImage`) at quality 1, and the UI warns it's lossy. WebP is
@@ -925,7 +1034,8 @@ storage without updating this section and the palette-swap design.
     format (Safari WebP), and when an image exceeds `MAX_EXPORT_SIZE` (8192)
     per side. `renderExport` checks the size (`checkExportSize`) before
     upscaling, since a 1024px document at 16× would take gigabytes.
-  - File names are `<name>[@<scale>x].<ext>`.
+  - File names are `<name>[-<side>][@<scale>x].<ext>`, the side left out for
+    the front.
 - Not built yet: export of the selection only, a "new document / canvas size"
   dialog, GIF/animated formats.
 
@@ -933,20 +1043,26 @@ storage without updating this section and the palette-swap design.
 
 - `.pixgrind` is pretty-printed JSON (`io/projectFile.ts`):
   - `format: "pixgrind"` and an integer `version`, then name, width,
-    height and the palette (hex strings).
-  - Layers bottom to top: name, visible, opacity, and `pixels`, which is
-    base64 of the zlib-compressed (`CompressionStream('deflate')`) palette
-    indices, row-major. Optionally `extrusion`, likewise for little-endian
-    16-bit boxes (`offset << 8 | depth`), written only when a painted pixel
-    isn't at the default (transparent pixels are saved as the default), and
-    `shapes`, a byte per pixel, written only when one isn't square.
+    height, depth and the palette (hex strings).
+  - Layers bottom to top: name, visible, opacity, `facing`, and `pixels`
+    (the size of its side), which is base64 of the zlib-compressed
+    (`CompressionStream('deflate')`) palette indices, row-major. Optionally
+    `extrusion`, likewise for little-endian 32-bit packed extrusions (shape
+    included), written only when a painted pixel isn't at the default
+    (transparent pixels are saved as the default). A side with no layer in
+    the file gets an empty one.
   - An optional `reference`: the original image file (base64) with its MIME
     type, placement and settings. It's re-decoded on load.
 - Not saved: the selection, floating selection (its on-canvas pixels are in
   the layer; off-canvas ones are lost), history, view, active layer, tool or
   paint colors. Layer ids are regenerated on load.
-- `PROJECT_VERSION` is 3 (2 added `extrusion`, 3 added `shapes`; older
-  files are version 3 files without them). When the schema changes, bump it
+- `PROJECT_VERSION` is 4 (2 added `extrusion` as 16-bit boxes, 3 added
+  `shapes`, 4 added `depth` and `facing` and turned boxes around). Versions
+  1–3 are read as front layers whose boxes went back from the picture
+  plane: the picture plane becomes the front of a volume as deep as the
+  deepest box (1 for flat art, so it stays at the default extrusion), and
+  each box is turned around (`offset = depth - old offset - box depth`), so
+  the model looks the same. When the schema changes, bump it
   and keep reading
   every older version by migrating its JSON to the current shape before
   reading. A newer version than this build knows is refused with a clear
@@ -981,7 +1097,8 @@ storage without updating this section and the palette-swap design.
   tooling.
 - In dev builds the editor is exposed as `window.pixgrind` (see `main.ts`), so
   automation can read `pixgrind.viewport`, `pixgrind.doc`, and
-  `pixgrind.activeLayer.pixels` instead of guessing coordinates.
+  `pixgrind.activeLayer.pixels` instead of guessing coordinates. Switch
+  sides with `pixgrind.setFacing('top')` or the keys 1–6.
 - Synthetic `PointerEvent`/`WheelEvent`s dispatched on the stage canvas
   exercise the real input path. Compute client coordinates from
   `pixgrind.viewport`. Select it with `.stage-canvas`: plain `canvas` matches
@@ -992,7 +1109,7 @@ storage without updating this section and the palette-swap design.
   the canvas isn't redrawn, and its backing size can be stale. State checks
   still work. To check pixel output, render synchronously first, then read
   pixels with `getImageData`:
-  `pixgrind.renderer.resize(w, h); pixgrind.renderer.render(pixgrind.doc, pixgrind.viewport)`.
+  `pixgrind.renderer.resize(w, h); pixgrind.renderer.render(pixgrind.doc, pixgrind.facing, pixgrind.viewport)`.
 - On Windows the Vite dev server often misses a file change made right after
   another edit to the same file. It then keeps serving the old module, and
   you'll see errors like "does not provide an export named …" or "X is not
@@ -1028,7 +1145,10 @@ storage without updating this section and the palette-swap design.
     volumes. Import into a collection of its own, away from the user's
     objects. The startup splash hides the viewport from screenshots; render
     with `bpy.ops.render.opengl(view_context=True)` and save the Render
-    Result instead.
+    Result instead. Small random documents rarely hit the awkward cases:
+    also try a dense one (many sparse layers on every side with
+    diagonals), which is how the pinch fixes in watertight meshing were
+    found.
   - The side and 3D panes only create their renderers once their
     ResizeObserver fires, which doesn't happen while the page is hidden. To
     check their pixels then, construct `SideRenderer`/`ModelRenderer` on a

@@ -1,4 +1,5 @@
 import { alpha, blue, green, red } from '../core/color.ts';
+import type { Volume } from '../core/facing.ts';
 import type { ModelMesh } from '../core/model.ts';
 import { FIELD_OF_VIEW, multiply, perspectiveMatrix, viewMatrix, type OrbitCamera } from './camera.ts';
 
@@ -64,8 +65,8 @@ export class WebGlUnavailableError extends Error {
 
 /**
  * Draws a model mesh with WebGL 2: opaque colors first, then translucent
- * ones blended over them, plus a faint floor grid and the picture plane's
- * outline. Draws only when asked (`render`).
+ * ones blended over them, plus a faint floor grid and the volume's outline.
+ * Draws only when asked (`render`).
  */
 export class ModelRenderer {
   private readonly canvas: HTMLCanvasElement;
@@ -135,23 +136,36 @@ export class ModelRenderer {
   }
 
   /**
-   * Sets the guides for a document `width` × `height` whose model reaches
-   * `depth` deep: a floor grid under it, and the picture plane's outline.
+   * Sets the guides for a document's volume (`width` × `height` × `depth`,
+   * centered on x and z, standing on y = 0): a floor grid under it, and its
+   * outline.
    */
-  setGuides(width: number, height: number, depth: number): void {
+  setGuides({ width, height, depth }: Volume): void {
     const { gl } = this;
     if (this.grid) deleteVertexArray(gl, this.grid.vao, [this.grid.buffer]);
     if (this.plane) deleteVertexArray(gl, this.plane.vao, [this.plane.buffer]);
-    const left = -width / 2;
-    const right = width / 2;
-    const front = Math.ceil(Math.max(2, depth / 2));
-    const back = -Math.max(depth, 1) - front;
+    const [left, right] = [-width / 2, width / 2];
+    const [back, front] = [-depth / 2, depth / 2];
     const step = Math.max(1, 2 ** Math.ceil(Math.log2(Math.max(width, depth) / 64)));
     const grid: number[] = [];
     for (let x = left; x <= right + 1e-9; x += step) grid.push(x, 0, front, x, 0, back);
     for (let z = front; z >= back - 1e-9; z -= step) grid.push(left, 0, z, right, 0, z);
     this.grid = this.lines(grid);
-    this.plane = this.lines([left, 0, 0, right, 0, 0, right, 0, 0, right, height, 0, right, height, 0, left, height, 0, left, height, 0, left, 0, 0]);
+    // The box's twelve edges: four along each axis.
+    const box: number[] = [];
+    for (const [a, b] of [
+      [left, back],
+      [right, back],
+      [right, front],
+      [left, front],
+    ]) {
+      box.push(a, 0, b, a, height, b);
+    }
+    for (const y of [0, height]) {
+      box.push(left, y, back, right, y, back, right, y, back, right, y, front);
+      box.push(right, y, front, left, y, front, left, y, front, left, y, back);
+    }
+    this.plane = this.lines(box);
   }
 
   render(camera: OrbitCamera): void {

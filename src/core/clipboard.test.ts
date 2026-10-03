@@ -44,28 +44,28 @@ function perform(doc: PixelDocument, history: History, edit: Edit | null): void 
 describe('copyPixels', () => {
   it('copies the selection, or the whole layer without one', () => {
     const doc = docFrom(['120', '303']);
-    doc.selection = rectMask({ x: 1, y: 0, width: 2, height: 2 });
+    doc.selections.front = rectMask({ x: 1, y: 0, width: 2, height: 2 });
     const clip = copyPixels(doc, doc.layers[0]);
     expect(clip.rect).toEqual({ x: 1, y: 0, width: 2, height: 2 });
     expect(Array.from(clip.pixels)).toEqual([2, 0, 0, 3]);
     expect(clip.colors).toEqual([RED, GREEN, BLUE]);
-    doc.selection = null;
+    doc.selections.front = null;
     expect(copyPixels(doc, doc.layers[0]).pixels).toHaveLength(6);
   });
 
   it('copies only the pixels in a non-rectangular selection, keeping its shape', () => {
     const doc = docFrom(['12', '31']);
-    doc.selection = { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 1, 1) };
+    doc.selections.front = { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 1, 1) };
     const clip = copyPixels(doc, doc.layers[0]);
     expect(Array.from(clip.pixels)).toEqual([1, 0, 3, 1]);
-    expect(clip.bits).toBe(doc.selection.bits);
+    expect(clip.bits).toBe(doc.selections.front.bits);
     // Cut clears just those pixels; pasting back floats the same shape.
     applyEdit(doc, cutEdit(doc, doc.layers[0])!, 'redo');
     expect(rows(doc)).toEqual(['02', '00']);
     applyEdit(doc, pasteEdit(doc, doc.layers[0], clip)!, 'redo');
     expect(rows(doc)).toEqual(['12', '31']);
     expect(doc.floating?.bits).toBe(clip.bits);
-    expect(doc.selection).toEqual({ rect: { x: 0, y: 0, width: 2, height: 2 }, bits: clip.bits });
+    expect(doc.selections.front).toEqual({ rect: { x: 0, y: 0, width: 2, height: 2 }, bits: clip.bits });
   });
 
   it('carries extrusions, and pastes images from elsewhere at the default', () => {
@@ -84,7 +84,7 @@ describe('copyPixels', () => {
 
   it('copies a float whole, including pixels off the document', () => {
     const doc = docFrom(['12']);
-    doc.selection = rectMask({ x: 0, y: 0, width: 2, height: 1 });
+    doc.selections.front = rectMask({ x: 0, y: 0, width: 2, height: 1 });
     applyEdit(doc, moveSelectionEdit(doc, doc.layers[0], 1, 0)!, 'redo');
     const clip = copyPixels(doc, doc.layers[0]);
     expect(clip.rect).toEqual({ x: 1, y: 0, width: 2, height: 1 });
@@ -95,12 +95,12 @@ describe('copyPixels', () => {
 describe('cutEdit', () => {
   it('clears the selection, or deletes a float', () => {
     const doc = docFrom(['123']);
-    doc.selection = rectMask({ x: 0, y: 0, width: 2, height: 1 });
+    doc.selections.front = rectMask({ x: 0, y: 0, width: 2, height: 1 });
     applyEdit(doc, cutEdit(doc, doc.layers[0])!, 'redo');
     expect(rows(doc)).toEqual(['003']);
 
     const floated = docFrom(['13']);
-    floated.selection = rectMask({ x: 0, y: 0, width: 1, height: 1 });
+    floated.selections.front = rectMask({ x: 0, y: 0, width: 1, height: 1 });
     applyEdit(floated, moveSelectionEdit(floated, floated.layers[0], 1, 0)!, 'redo');
     const cut = cutEdit(floated, floated.layers[0])!;
     expect(cut.label).toBe('Cut');
@@ -114,12 +114,12 @@ describe('pasteEdit', () => {
   it('pastes as a float where it was copied from, ready to move', () => {
     const doc = docFrom(['1200', '0000']);
     const history = new History();
-    doc.selection = rectMask({ x: 0, y: 0, width: 2, height: 1 });
+    doc.selections.front = rectMask({ x: 0, y: 0, width: 2, height: 1 });
     const clip = copyPixels(doc, doc.layers[0]);
-    doc.selection = null;
+    doc.selections.front = null;
     perform(doc, history, pasteEdit(doc, doc.layers[0], clip));
     expect(doc.floating?.rect).toEqual({ x: 0, y: 0, width: 2, height: 1 });
-    expect(doc.selection).toEqual(rectMask({ x: 0, y: 0, width: 2, height: 1 }));
+    expect(doc.selections.front).toEqual(rectMask({ x: 0, y: 0, width: 2, height: 1 }));
     // Moving it uncovers the original pixels underneath: the paste covered them.
     perform(doc, history, moveSelectionEdit(doc, doc.layers[0], 1, 1));
     expect(rows(doc)).toEqual(['1200', '0120']);
@@ -127,7 +127,7 @@ describe('pasteEdit', () => {
     history.undo(doc);
     expect(rows(doc)).toEqual(['1200', '0000']);
     expect(doc.floating).toBeNull();
-    expect(doc.selection).toBeNull();
+    expect(doc.selections.front).toBeNull();
   });
 
   it("transparent parts don't cover what's under them", () => {
@@ -168,7 +168,7 @@ describe('clip images', () => {
     const image = clipImage(clip);
     expect(Array.from(image.data)).toEqual([0, 255, 0, 255, 0, 0, 0, 0]);
     const doc = docFrom(['0000']);
-    const back = clipFromImage(image, doc);
+    const back = clipFromImage(image, doc.palette, doc);
     expect(Array.from(back.pixels)).toEqual([2, 0]);
     expect(back.rect).toEqual({ x: 1, y: 0, width: 2, height: 1 });
   });
@@ -197,6 +197,6 @@ describe('clip images', () => {
   it('refuses images too large to paste', () => {
     const doc = docFrom(['0']);
     const huge = { width: MAX_DOCUMENT_SIZE + 1, height: 1, data: new Uint8ClampedArray((MAX_DOCUMENT_SIZE + 1) * 4) };
-    expect(() => clipFromImage(huge, doc)).toThrow(/too large to paste/);
+    expect(() => clipFromImage(huge, doc.palette, doc)).toThrow(/too large to paste/);
   });
 });

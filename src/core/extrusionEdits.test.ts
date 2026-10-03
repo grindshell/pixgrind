@@ -15,7 +15,7 @@ describe('updateExtrusionsEdit', () => {
     const [layer] = doc.layers;
     layer.pixels.set([1, 0, 1]);
     const area = { rect: { x: 1, y: 0, width: 2, height: 1 }, bits: null };
-    const edit = updateExtrusionsEdit(doc, layer, area, deep)!;
+    const edit = updateExtrusionsEdit(layer, area, deep)!;
     applyEdit(doc, edit, 'redo');
     expect(Array.from(layer.extrusion)).toEqual([DEFAULT_EXTRUSION, DEFAULT_EXTRUSION, DEEP]);
     applyEdit(doc, edit, 'undo');
@@ -27,11 +27,11 @@ describe('updateExtrusionsEdit', () => {
     const [layer] = doc.layers;
     layer.pixels.fill(1);
     const diagonal = { rect: { x: 0, y: 0, width: 2, height: 2 }, bits: Uint8Array.of(1, 0, 0, 1) };
-    applyEdit(doc, updateExtrusionsEdit(doc, layer, diagonal, deep)!, 'redo');
+    applyEdit(doc, updateExtrusionsEdit(layer, diagonal, deep)!, 'redo');
     expect(Array.from(layer.extrusion)).toEqual([DEEP, DEFAULT_EXTRUSION, DEFAULT_EXTRUSION, DEEP]);
-    applyEdit(doc, updateExtrusionsEdit(doc, layer, null, deep)!, 'redo');
+    applyEdit(doc, updateExtrusionsEdit(layer, null, deep)!, 'redo');
     expect(layer.extrusion.every((e) => e === DEEP)).toBe(true);
-    expect(updateExtrusionsEdit(doc, layer, null, deep)).toBeNull();
+    expect(updateExtrusionsEdit(layer, null, deep)).toBeNull();
   });
 
   it('passes each pixel its extrusion and position', () => {
@@ -39,7 +39,7 @@ describe('updateExtrusionsEdit', () => {
     const [layer] = doc.layers;
     layer.pixels.fill(1);
     layer.extrusion[1] = DEEP;
-    const edit = updateExtrusionsEdit(doc, layer, null, (e, x) => (x === 1 ? withShape(e, CUT_TOP_LEFT) : e))!;
+    const edit = updateExtrusionsEdit(layer, null, (e, x) => (x === 1 ? withShape(e, CUT_TOP_LEFT) : e))!;
     applyEdit(doc, edit, 'redo');
     expect(Array.from(layer.extrusion)).toEqual([DEFAULT_EXTRUSION, withShape(DEEP, CUT_TOP_LEFT)]);
     expect(extrusionShape(layer.extrusion[1])).toBe(CUT_TOP_LEFT);

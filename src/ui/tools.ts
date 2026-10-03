@@ -1,7 +1,8 @@
 import { brushLine, brushMask, brushRect, type BrushMask } from '../core/brush.ts';
 import { visibleIndexAt } from '../core/composite.ts';
 import { combineEdits, type PixelEditSession } from '../core/edits.ts';
-import { autoShape, SQUARE, withBox, withShape, type Cell, type Extrusion } from '../core/extrusion.ts';
+import { autoShape, fitExtrusion, SQUARE, withBox, withShape, type Cell, type Extrusion } from '../core/extrusion.ts';
+import { planeRect } from '../core/facing.ts';
 import { colorRegion, floodRegion } from '../core/floodFill.ts';
 import {
   clipMask,
@@ -14,7 +15,6 @@ import {
 } from '../core/mask.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { pixelPerfectPath } from '../core/pixelPerfect.ts';
-import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { rectFromCorners, rectsEqual } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
@@ -209,10 +209,10 @@ const fill: Tool = {
   shortcut: 'g',
   paints: true,
   begin(editor, start, index) {
-    const { doc } = editor;
     const session = editor.beginStroke('Fill');
-    for (const offset of floodRegion(doc, session.layer, start.x, start.y, doc.selection)) {
-      session.setPixel(offset % doc.width, Math.floor(offset / doc.width), index);
+    const { width } = session.layer;
+    for (const offset of floodRegion(session.layer, start.x, start.y, editor.selection)) {
+      session.setPixel(offset % width, Math.floor(offset / width), index);
     }
     editor.requestRender();
     return { move() {}, end: () => editor.endStroke() };
@@ -243,9 +243,11 @@ function extrusionStroke(
 
 /**
  * Extrude: paints depth instead of color. The left button gives painted
- * pixels of the active layer the 3D panel's depth and offset; the right
- * button puts them back to the default (one deep, at the front). Shapes
- * stay. Pressing also shows the pressed column in the side view.
+ * pixels of the active layer the 3D panel's depth and offset, so their
+ * boxes grow toward the camera (cut short where they'd leave the volume);
+ * the right button puts them back to the default (one deep, against the far
+ * side). Shapes stay. Pressing also shows the pressed column in the side
+ * view.
  */
 const extrude: Tool = {
   id: 'extrude',
@@ -257,9 +259,10 @@ const extrude: Tool = {
   begin(editor, start, _index, slot) {
     const primary = slot === 'primary';
     const { offset, depth } = primary ? editor.extrude : { offset: 0, depth: 1 };
-    if (start.x >= 0 && start.x < editor.doc.width) editor.setSliceColumn(start.x);
+    const { extent } = editor;
+    if (start.x >= 0 && start.x < editor.plane.width) editor.setSliceColumn(start.x);
     return extrusionStroke(editor, start, primary ? 'Extrude' : 'Reset extrusion', (extrusion) =>
-      withBox(extrusion, offset, depth),
+      fitExtrusion(withBox(extrusion, offset, depth), extent),
     );
   },
 };
@@ -279,11 +282,10 @@ const diagonal: Tool = {
   paints: true,
   brush: true,
   begin(editor, start, _index, slot) {
-    const { doc } = editor;
     const choice = slot === 'primary' ? editor.diagonal : SQUARE;
-    const { pixels } = editor.activeLayer;
+    const { pixels, width, height } = editor.activeLayer;
     return extrusionStroke(editor, start, slot === 'primary' ? 'Diagonal' : 'Square', (extrusion, x, y) => {
-      const shape = choice === 'auto' ? autoShape(pixels, doc.width, doc.height, x, y) : choice;
+      const shape = choice === 'auto' ? autoShape(pixels, width, height, x, y) : choice;
       return shape === null ? extrusion : withShape(extrusion, shape);
     });
   },
@@ -301,7 +303,7 @@ const eyedropper: Tool = {
   paints: false,
   begin(editor, start, _index, slot) {
     const pick = (input: ToolInput) => {
-      const index = visibleIndexAt(editor.doc, input.x, input.y);
+      const index = visibleIndexAt(editor.doc, editor.facing, input.x, input.y);
       if (index !== TRANSPARENT && index !== editor.colorIndex(slot)) editor.setColorIndex(slot, index);
     };
     pick(start);
@@ -324,8 +326,8 @@ interface Selecting {
 }
 
 function selecting(editor: Editor, start: ToolInput): Selecting {
-  const { doc } = editor;
-  const before = doc.selection;
+  const { doc, facing, plane } = editor;
+  const before = editor.selection;
   const floating = doc.floating;
   const mode = modifierMode(start) ?? editor.selectionMode;
   // Show the selection being made rather than the float's outline.
@@ -333,12 +335,14 @@ function selecting(editor: Editor, start: ToolInput): Selecting {
   return {
     mode,
     preview(shape) {
-      editor.previewSelection(combineMasks(before, shape && clipMask(shape, doc.width, doc.height), mode));
+      editor.previewSelection(combineMasks(before, shape && clipMask(shape, plane.width, plane.height), mode));
     },
     commit() {
-      const after = doc.selection;
+      const after = doc.selections[facing];
       const label = after ? 'Select' : 'Deselect';
-      editor.record(combineEdits(label, [floatingChange(floating, null, label), selectionChange(before, after, label)]));
+      editor.record(
+        combineEdits(label, [floatingChange(floating, null, label), selectionChange(facing, before, after, label)]),
+      );
     },
   };
 }
@@ -403,7 +407,7 @@ const lasso: Tool = {
       },
       end() {
         editor.previewLasso(null);
-        selection.preview(points.length > 1 ? lassoMask(points, documentRect(editor.doc)) : null);
+        selection.preview(points.length > 1 ? lassoMask(points, planeRect(editor.doc, editor.facing)) : null);
         selection.commit();
       },
     };
@@ -446,7 +450,7 @@ function finishPolygon(editor: Editor): void {
   cancelPolygon(editor);
   const { corners } = polygon;
   const selection = selecting(editor, polygon.start);
-  selection.preview(corners.length > 1 ? lassoMask(corners, documentRect(editor.doc)) : null);
+  selection.preview(corners.length > 1 ? lassoMask(corners, planeRect(editor.doc, editor.facing)) : null);
   selection.commit();
 }
 
@@ -539,12 +543,9 @@ const wand: Tool = {
   paints: false,
   begin(editor, start) {
     const selection = selecting(editor, start);
-    const { doc } = editor;
     const layer = editor.activeLayer;
-    const region = editor.wandContiguous
-      ? floodRegion(doc, layer, start.x, start.y)
-      : colorRegion(doc, layer, start.x, start.y);
-    selection.preview(maskFromOffsets(region, doc.width));
+    const region = editor.wandContiguous ? floodRegion(layer, start.x, start.y) : colorRegion(layer, start.x, start.y);
+    selection.preview(maskFromOffsets(region, layer.width));
     return { move() {}, end: () => selection.commit() };
   },
 };
@@ -565,13 +566,14 @@ const move: Tool = {
   begin(editor, start) {
     const { doc } = editor;
     const layer = editor.activeLayer;
-    const startSelection = doc.selection;
+    const { facing, width, height } = layer;
+    const startSelection = doc.selections[facing];
     const startFloating = doc.floating;
     const origin = startFloating?.layerId === layer.id ? startFloating : liftSelection(doc, layer);
     // Not clipped: moved pixels may land outside the original selection.
     const session = editor.beginStroke('Move', { clipToSelection: false });
     const write = (cells: Map<number, Cell>) => {
-      for (const [offset, cell] of cells) session.setCell(offset % doc.width, Math.floor(offset / doc.width), cell);
+      for (const [offset, cell] of cells) session.setCell(offset % width, Math.floor(offset / width), cell);
     };
     /** Whole-layer moves rewrite the layer on every pointer move; these save allocating each time. */
     let shifted: { pixels: Uint8Array; extrusion: Uint32Array } | undefined;
@@ -587,15 +589,15 @@ const move: Tool = {
         // Recompute from the state at the start of the drag each time.
         session.revert();
         if (origin) {
-          const { cells, moved } = moveFloating(doc, layer, origin, dx, dy);
+          const { cells, moved } = moveFloating(layer, origin, dx, dy);
           write(cells);
           editor.previewFloating(moved);
-          editor.previewSelection(clipMask(moved, doc.width, doc.height));
+          editor.previewSelection(clipMask(moved, width, height));
         } else {
           shifted ??= { pixels: new Uint8Array(layer.pixels.length), extrusion: new Uint32Array(layer.pixels.length) };
           session.setAll(
-            shiftedValues(doc, layer.pixels, dx, dy, shifted.pixels),
-            shiftedValues(doc, layer.extrusion, dx, dy, shifted.extrusion),
+            shiftedValues(layer, layer.pixels, dx, dy, shifted.pixels),
+            shiftedValues(layer, layer.extrusion, dx, dy, shifted.extrusion),
           );
         }
         editor.requestRender();
@@ -613,7 +615,7 @@ const move: Tool = {
           combineEdits('Move', [
             pixels,
             floatingChange(startFloating, doc.floating, 'Move'),
-            selectionChange(startSelection, doc.selection, 'Move'),
+            selectionChange(facing, startSelection, doc.selections[facing], 'Move'),
           ]),
         );
       },

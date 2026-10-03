@@ -38,6 +38,23 @@ export function bytesToUint16(bytes: Uint8Array): Uint16Array {
   return values;
 }
 
+/** 32-bit values as little-endian bytes, whatever the platform's byte order. */
+export function uint32ToBytes(values: Uint32Array): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(values.length * 4);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < values.length; i++) view.setUint32(i * 4, values[i], true);
+  return bytes;
+}
+
+/** Reads little-endian 32-bit values. Throws unless the bytes come in fours. */
+export function bytesToUint32(bytes: Uint8Array): Uint32Array {
+  if (bytes.length % 4 !== 0) throw new RangeError('Expected a multiple of four bytes');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const values = new Uint32Array(bytes.length / 4);
+  for (let i = 0; i < values.length; i++) values[i] = view.getUint32(i * 4, true);
+  return values;
+}
+
 /** Compresses with zlib ("deflate"). */
 export async function deflate(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));

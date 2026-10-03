@@ -30,7 +30,7 @@ describe('floodRegion', () => {
       '11100',
       '00000',
     ]);
-    const region = floodRegion(doc, doc.layers[0], 0, 0);
+    const region = floodRegion(doc.layers[0], 0, 0);
     expect(show(doc, region)).toEqual([
       '##100',
       '##100',
@@ -46,7 +46,7 @@ describe('floodRegion', () => {
       '0100',
       '1000',
     ]);
-    const region = floodRegion(doc, doc.layers[0], 0, 0);
+    const region = floodRegion(doc.layers[0], 0, 0);
     expect(show(doc, region)).toEqual([
       '###1',
       '##10',
@@ -60,12 +60,12 @@ describe('floodRegion', () => {
       '22',
       '12',
     ]);
-    expect(Array.from(floodRegion(doc, doc.layers[0], 1, 1)).sort()).toEqual([0, 1, 3]);
+    expect(Array.from(floodRegion(doc.layers[0], 1, 1)).sort()).toEqual([0, 1, 3]);
   });
 
   it('covers the whole layer when uniform', () => {
     const doc = createDocument(7, 5, palette);
-    expect(floodRegion(doc, doc.layers[0], 3, 2)).toHaveLength(35);
+    expect(floodRegion(doc.layers[0], 3, 2)).toHaveLength(35);
   });
 
   it('stays inside the bounds rectangle', () => {
@@ -75,12 +75,12 @@ describe('floodRegion', () => {
       '0000',
     ]);
     const bounds = rectMask({ x: 1, y: 0, width: 2, height: 2 });
-    expect(show(doc, floodRegion(doc, doc.layers[0], 1, 1, bounds))).toEqual([
+    expect(show(doc, floodRegion(doc.layers[0], 1, 1, bounds))).toEqual([
       '0##0',
       '0##0',
       '0000',
     ]);
-    expect(floodRegion(doc, doc.layers[0], 0, 0, bounds)).toHaveLength(0);
+    expect(floodRegion(doc.layers[0], 0, 0, bounds)).toHaveLength(0);
   });
 
   it('stays inside a non-rectangular mask', () => {
@@ -91,12 +91,12 @@ describe('floodRegion', () => {
     ]);
     // A ring with the middle left out, open at the bottom-right corner.
     const bounds = { rect: { x: 0, y: 0, width: 3, height: 3 }, bits: Uint8Array.of(1, 1, 1, 1, 0, 1, 1, 1, 0) };
-    expect(show(doc, floodRegion(doc, doc.layers[0], 0, 2, bounds))).toEqual([
+    expect(show(doc, floodRegion(doc.layers[0], 0, 2, bounds))).toEqual([
       '###',
       '#0#',
       '##0',
     ]);
-    expect(floodRegion(doc, doc.layers[0], 1, 1, bounds)).toHaveLength(0);
+    expect(floodRegion(doc.layers[0], 1, 1, bounds)).toHaveLength(0);
   });
 });
 
@@ -106,16 +106,16 @@ describe('colorRegion', () => {
       '101',
       '010',
     ]);
-    expect(show(doc, colorRegion(doc, doc.layers[0], 2, 0))).toEqual([
+    expect(show(doc, colorRegion(doc.layers[0], 2, 0))).toEqual([
       '#0#',
       '0#0',
     ]);
-    expect(colorRegion(doc, doc.layers[0], 3, 0)).toHaveLength(0);
+    expect(colorRegion(doc.layers[0], 3, 0)).toHaveLength(0);
   });
 
   it('is empty outside the document', () => {
     const doc = createDocument(2, 2, palette);
-    expect(floodRegion(doc, doc.layers[0], 2, 0)).toHaveLength(0);
-    expect(floodRegion(doc, doc.layers[0], 0, -1)).toHaveLength(0);
+    expect(floodRegion(doc.layers[0], 2, 0)).toHaveLength(0);
+    expect(floodRegion(doc.layers[0], 0, -1)).toHaveLength(0);
   });
 });

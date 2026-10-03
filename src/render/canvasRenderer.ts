@@ -2,8 +2,10 @@ import type { BrushMask } from '../core/brush.ts';
 import { alpha, blue, green, red } from '../core/color.ts';
 import { compositeRgba } from '../core/composite.ts';
 import { extrusionDepth, extrusionOffset, extrusionShape, SQUARE } from '../core/extrusion.ts';
+import { planeSize, type Facing } from '../core/facing.ts';
 import type { Layer } from '../core/layer.ts';
 import { maskOutline, type Mask, type OutlineRun } from '../core/mask.ts';
+import type { IndexImage } from '../core/model.ts';
 import { colorForIndex, TRANSPARENT, type Palette } from '../core/palette.ts';
 import { findLayer, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
@@ -31,6 +33,8 @@ const LABEL_OUTLINE = 'rgba(0, 0, 0, 0.85)';
 /** Over the corner a diagonal pixel cuts off, and along its cut. */
 const CUT_SHADE = 'rgba(16, 16, 22, 0.6)';
 const CUT_EDGE = 'rgba(255, 255, 255, 0.8)';
+/** The rest of the model, seen from the side being edited, is drawn this faint under its layers. */
+const GUIDE_ALPHA = 0.3;
 
 /** The brush footprint at a document pixel (the one under the pointer). */
 export interface BrushCursor extends Point {
@@ -40,6 +44,8 @@ export interface BrushCursor extends Point {
 /** Things drawn with the artwork that aren't part of the document. */
 export interface RenderOverlays {
   reference?: ReferenceImage | null;
+  /** The model of the other sides seen from this one (palette indices, the plane's size), drawn faintly under the layers. */
+  guide?: IndexImage | null;
   brush?: BrushCursor | null;
   /** The path of a lasso being drawn, in document pixels. */
   lasso?: readonly Point[] | null;
@@ -62,7 +68,11 @@ export interface RenderOptions {
   reuseComposite?: boolean;
 }
 
-/** Draws a document onto a screen canvas: checkerboard backdrop, reference image, layer composite, selection. */
+/**
+ * Draws one side of a document (its plane, see `Facing`) onto a screen
+ * canvas: checkerboard backdrop, reference image, the guide, layer
+ * composite, selection.
+ */
 export class CanvasRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -75,6 +85,7 @@ export class CanvasRenderer {
   private readonly outlines = new WeakMap<Uint8Array, readonly OutlineRun[]>();
   private imageData: ImageData | null = null;
   private floatingImage: { pixels: Uint8Array; palette: Palette; canvas: HTMLCanvasElement } | null = null;
+  private guideImage: { guide: IndexImage; canvas: HTMLCanvasElement } | null = null;
   private labels: { canvas: HTMLCanvasElement; key: string; layer: Layer } | null = null;
   /** Content changed since the labels were drawn. */
   private labelsStale = true;
@@ -105,14 +116,16 @@ export class CanvasRenderer {
   }
 
   /**
-   * Draws checkerboard, reference (if below), artwork, reference (if above),
-   * depth labels, the side view's column, floating pixels off the document,
-   * the selection outline, a lasso being drawn, then the brush outline.
+   * Draws checkerboard, reference (if below), the guide, artwork, reference
+   * (if above), extrusions, the side view's column, floating pixels off the
+   * plane, the selection outline, a lasso being drawn, then the brush
+   * outline: all of side `facing`.
    */
   render(
     doc: PixelDocument,
+    facing: Facing,
     viewport: Viewport,
-    { reference = null, brush = null, lasso = null, slice = null, extrusions = null }: RenderOverlays = {},
+    { reference = null, guide = null, brush = null, lasso = null, slice = null, extrusions = null }: RenderOverlays = {},
     { reuseComposite = false }: RenderOptions = {},
   ): void {
     const { ctx } = this;
@@ -125,8 +138,9 @@ export class CanvasRenderer {
     const offsetX = Math.round(viewport.offsetX * dpr) / dpr;
     const offsetY = Math.round(viewport.offsetY * dpr) / dpr;
     const { zoom } = viewport;
-    const width = doc.width * zoom;
-    const height = doc.height * zoom;
+    const plane = planeSize(doc, facing);
+    const width = plane.width * zoom;
+    const height = plane.height * zoom;
 
     this.checker.setTransform(new DOMMatrix().translateSelf(offsetX, offsetY));
     ctx.fillStyle = this.checker;
@@ -136,16 +150,23 @@ export class CanvasRenderer {
     if (shownReference && !shownReference.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
 
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(this.compositeCanvas(doc, reuseComposite), offsetX, offsetY, width, height);
+    if (guide && guide.width === plane.width && guide.height === plane.height) {
+      ctx.globalAlpha = GUIDE_ALPHA;
+      ctx.drawImage(this.guideCanvas(guide, doc.palette, reuseComposite), offsetX, offsetY, width, height);
+      ctx.globalAlpha = 1;
+    }
+    ctx.drawImage(this.compositeCanvas(doc, facing, reuseComposite), offsetX, offsetY, width, height);
 
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
     // Content can change while labels aren't shown; they're redrawn the next time they are.
     if (!reuseComposite) this.labelsStale = true;
-    if (extrusions && zoom >= MIN_SHAPE_ZOOM) this.drawExtrusions(doc, extrusions, offsetX, offsetY, zoom, dpr);
-    if (slice !== null && slice < doc.width) this.drawSlice(slice, offsetX, offsetY, height, zoom, dpr);
-    if (doc.floating) this.drawFloatingOverhang(doc, doc.floating, offsetX, offsetY, width, height, zoom);
-    // A float's outline shows all of it, including any part off the document.
-    const outline = doc.floating ?? doc.selection;
+    if (extrusions && zoom >= MIN_SHAPE_ZOOM) this.drawExtrusions(extrusions, offsetX, offsetY, zoom, dpr);
+    if (slice !== null && slice < plane.width) this.drawSlice(slice, offsetX, offsetY, height, zoom, dpr);
+    // A float on another side's layer isn't shown here.
+    const floating = doc.floating && findLayer(doc, doc.floating.layerId)?.facing === facing ? doc.floating : null;
+    if (floating) this.drawFloatingOverhang(doc, floating, offsetX, offsetY, width, height, zoom);
+    // A float's outline shows all of it, including any part off the plane.
+    const outline = floating ?? doc.selections[facing];
     if (outline) this.drawSelection(outline, offsetX, offsetY, zoom, dpr);
     if (lasso) this.drawLasso(lasso, offsetX, offsetY, zoom, dpr);
     if (brush) this.drawBrush(brush, offsetX, offsetY, zoom, dpr);
@@ -167,8 +188,9 @@ export class CanvasRenderer {
   ): void {
     const { rect } = floating;
     const layer = findLayer(doc, floating.layerId);
-    const inside = rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= doc.width && rect.y + rect.height <= doc.height;
-    if (inside || !layer?.visible) return;
+    if (!layer?.visible) return;
+    const inside = rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= layer.width && rect.y + rect.height <= layer.height;
+    if (inside) return;
     const { ctx } = this;
     ctx.save();
     ctx.beginPath();
@@ -252,7 +274,6 @@ export class CanvasRenderer {
    * layer or view changes.
    */
   private drawExtrusions(
-    doc: PixelDocument,
     { layer, depths }: { layer: Layer; depths: boolean },
     offsetX: number,
     offsetY: number,
@@ -267,7 +288,7 @@ export class CanvasRenderer {
       canvas.width = width;
       canvas.height = height;
       const labels = depths && zoom >= MIN_LABEL_ZOOM;
-      paintExtrusions(get2dContext(canvas), doc, layer, offsetX * dpr, offsetY * dpr, zoom * dpr, labels);
+      paintExtrusions(get2dContext(canvas), layer, offsetX * dpr, offsetY * dpr, zoom * dpr, labels);
       cache = this.labels = { canvas, key, layer };
       this.labelsStale = false;
     }
@@ -348,19 +369,50 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  /** The visible layers flattened at native size. Recomposited unless `reuse` and the size is unchanged. */
-  private compositeCanvas(doc: PixelDocument, reuse: boolean): HTMLCanvasElement {
-    if (this.imageData?.width !== doc.width || this.imageData.height !== doc.height) {
-      this.docCanvas.width = doc.width;
-      this.docCanvas.height = doc.height;
-      this.imageData = this.docCtx.createImageData(doc.width, doc.height);
+  /**
+   * The side's visible layers flattened at native size. Recomposited unless
+   * `reuse` and the size is unchanged (callers recomposite when the side
+   * changes).
+   */
+  private compositeCanvas(doc: PixelDocument, facing: Facing, reuse: boolean): HTMLCanvasElement {
+    const { width, height } = planeSize(doc, facing);
+    if (this.imageData?.width !== width || this.imageData.height !== height) {
+      this.docCanvas.width = width;
+      this.docCanvas.height = height;
+      this.imageData = this.docCtx.createImageData(width, height);
     } else if (reuse) {
       return this.docCanvas;
     }
-    compositeRgba(doc, this.imageData.data);
+    compositeRgba(doc, facing, this.imageData.data);
     this.docCtx.putImageData(this.imageData, 0, 0);
     return this.docCanvas;
   }
+
+  /** The guide as an image, redrawn when it or the content (palette included) changes. */
+  private guideCanvas(guide: IndexImage, palette: Palette, reuse: boolean): HTMLCanvasElement {
+    const cached = this.guideImage;
+    if (cached?.guide === guide && reuse) return cached.canvas;
+    const canvas = cached?.canvas ?? document.createElement('canvas');
+    canvas.width = guide.width;
+    canvas.height = guide.height;
+    get2dContext(canvas).putImageData(indexImageData(guide, palette), 0, 0);
+    this.guideImage = { guide, canvas };
+    return canvas;
+  }
+}
+
+/** Palette indices (0 for none) as an image. */
+export function indexImageData({ width, height, pixels }: IndexImage, palette: Palette): ImageData {
+  const image = new ImageData(Math.max(1, width), Math.max(1, height));
+  for (let i = 0; i < pixels.length; i++) {
+    if (!pixels[i]) continue;
+    const color = colorForIndex(palette, pixels[i]);
+    image.data[i * 4] = red(color);
+    image.data[i * 4 + 1] = green(color);
+    image.data[i * 4 + 2] = blue(color);
+    image.data[i * 4 + 3] = alpha(color);
+  }
+  return image;
 }
 
 /**
@@ -371,7 +423,6 @@ export class CanvasRenderer {
  */
 function paintExtrusions(
   ctx: CanvasRenderingContext2D,
-  doc: PixelDocument,
   layer: Layer,
   originX: number,
   originY: number,
@@ -381,9 +432,9 @@ function paintExtrusions(
   const { width, height } = ctx.canvas;
   ctx.clearRect(0, 0, width, height);
   const left = Math.max(0, Math.floor(-originX / scale));
-  const right = Math.min(doc.width, Math.ceil((width - originX) / scale));
+  const right = Math.min(layer.width, Math.ceil((width - originX) / scale));
   const top = Math.max(0, Math.floor(-originY / scale));
-  const bottom = Math.min(doc.height, Math.ceil((height - originY) / scale));
+  const bottom = Math.min(layer.height, Math.ceil((height - originY) / scale));
 
   // Diagonal pixels: shade the corner each cuts off and mark the cut. The
   // corners of a pixel go clockwise from the top left, the order of shapes.
@@ -391,7 +442,7 @@ function paintExtrusions(
   const cuts = new Path2D();
   for (let y = top; y < bottom; y++) {
     for (let x = left; x < right; x++) {
-      const offset = y * doc.width + x;
+      const offset = y * layer.width + x;
       const shape = extrusionShape(layer.extrusion[offset]);
       if (shape === SQUARE || layer.pixels[offset] === TRANSPARENT) continue;
       const px = Math.round(originX + x * scale);
@@ -426,7 +477,7 @@ function paintExtrusions(
   ctx.strokeStyle = LABEL_OUTLINE;
   for (let y = top; y < bottom; y++) {
     for (let x = left; x < right; x++) {
-      const offset = y * doc.width + x;
+      const offset = y * layer.width + x;
       if (layer.pixels[offset] === TRANSPARENT) continue;
       const extrusion = layer.extrusion[offset];
       const px = originX + x * scale;

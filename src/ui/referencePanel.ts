@@ -30,7 +30,7 @@ export async function loadReferenceFile(editor: Editor, file: Blob & { name?: st
     source: file,
     width: bitmap.width,
     height: bitmap.height,
-    ...fitPlacement(bitmap.width, bitmap.height, editor.doc.width, editor.doc.height),
+    ...fitPlacement(bitmap.width, bitmap.height, editor.plane.width, editor.plane.height),
     opacity: DEFAULT_OPACITY,
     visible: true,
     above: false,
@@ -113,7 +113,7 @@ export function createReferencePanel(editor: Editor): HTMLElement {
   });
   const fitButton = textButton('Fit', () => {
     const ref = editor.reference;
-    if (ref) editor.updateReference(fitPlacement(ref.width, ref.height, editor.doc.width, editor.doc.height));
+    if (ref) editor.updateReference(fitPlacement(ref.width, ref.height, editor.plane.width, editor.plane.height));
   });
   fitButton.title = 'Fit the reference inside the canvas';
   scale.row.append(fitButton);

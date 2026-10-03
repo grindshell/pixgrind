@@ -77,10 +77,11 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): FilePa
         format: format.value as ImageFormat,
         scale: Number(scale.value),
         background: parseHex(background.value),
+        facing: editor.facing,
       }),
     );
   });
-  exportButton.title = 'Download the visible layers as an image';
+  exportButton.title = 'Download the visible layers of the side being edited as an image';
 
   const background = el('input', 'color-picker');
   background.type = 'color';

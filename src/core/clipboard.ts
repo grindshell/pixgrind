@@ -5,14 +5,17 @@ import { indexImageToPalette, type RgbaImage } from './image.ts';
 import type { Layer } from './layer.ts';
 import { TRANSPARENT, type Palette } from './palette.ts';
 import { nearestColorIndex } from './paletteEdits.ts';
-import { documentRect, MAX_DOCUMENT_SIZE, type PixelDocument } from './pixelDocument.ts';
+import { MAX_DOCUMENT_SIZE, type PixelDocument } from './pixelDocument.ts';
 import { rectMask, type Mask } from './mask.ts';
 import type { Rect } from './rect.ts';
 import { clearAreaEdit, deleteFloatingEdit, placeFloatingEdit, selectedExtrusion, selectedPixels } from './selection.ts';
 
+/** A layer's size, or a plane's. */
+type Size = Pick<Layer, 'width' | 'height'>;
+
 /**
  * Copied pixels, independent of the document they came from. As a mask it's
- * the shape they were copied with, where they were copied from (document
+ * the shape they were copied with, where they were copied from (layer
  * coordinates); pasting returns them there when it can.
  */
 export interface PixelClip extends Mask {
@@ -26,7 +29,7 @@ export interface PixelClip extends Mask {
 
 /**
  * What a copy of `layer` takes: its floating pixels (including any off the
- * document), else the selection, else the whole layer.
+ * layer), else its facing's selection, else the whole layer.
  */
 export function copyPixels(doc: PixelDocument, layer: Layer): PixelClip {
   const colors = [...doc.palette.colors];
@@ -35,12 +38,12 @@ export function copyPixels(doc: PixelDocument, layer: Layer): PixelClip {
     const { rect, bits, pixels, extrusion } = floating;
     return { rect, bits, pixels: pixels.slice(), extrusion: extrusion.slice(), colors };
   }
-  const area = doc.selection ?? rectMask(documentRect(doc));
+  const area = copiedArea(doc, layer);
   return {
     rect: area.rect,
     bits: area.bits,
-    pixels: selectedPixels(doc, layer, area),
-    extrusion: selectedExtrusion(doc, layer, area),
+    pixels: selectedPixels(layer, area),
+    extrusion: selectedExtrusion(layer, area),
     colors,
   };
 }
@@ -48,19 +51,24 @@ export function copyPixels(doc: PixelDocument, layer: Layer): PixelClip {
 /** Removes what `copyPixels` took (cut): the floating pixels, else the selection's or whole layer's. */
 export function cutEdit(doc: PixelDocument, layer: Layer): Edit | null {
   if (doc.floating?.layerId === layer.id) return deleteFloatingEdit(doc, 'Cut');
-  return clearAreaEdit(doc, layer, doc.selection ?? rectMask(documentRect(doc)), 'Cut');
+  return clearAreaEdit(layer, copiedArea(doc, layer), 'Cut');
 }
 
-/** An image (e.g. from another app) as a clip, in nearest palette colors, centered on the document. */
-export function clipFromImage(image: RgbaImage, doc: PixelDocument): PixelClip {
+/** The selection on `layer`'s facing, else the whole layer. */
+function copiedArea(doc: PixelDocument, layer: Layer): Mask {
+  return doc.selections[layer.facing] ?? rectMask({ x: 0, y: 0, width: layer.width, height: layer.height });
+}
+
+/** An image (e.g. from another app) as a clip, in nearest palette colors, centered on a plane `size`. */
+export function clipFromImage(image: RgbaImage, palette: Palette, size: Size): PixelClip {
   if (image.width > MAX_DOCUMENT_SIZE || image.height > MAX_DOCUMENT_SIZE) {
     throw new RangeError(`${image.width}×${image.height} is too large to paste (max ${MAX_DOCUMENT_SIZE} per side)`);
   }
   return {
-    rect: centeredRect(doc, image.width, image.height),
+    rect: centeredRect(size, image.width, image.height),
     bits: null,
-    pixels: indexImageToPalette(image.data, doc.palette),
-    colors: [...doc.palette.colors],
+    pixels: indexImageToPalette(image.data, palette),
+    colors: [...palette.colors],
   };
 }
 
@@ -115,11 +123,11 @@ export function clipIndices(clip: PixelClip, palette: Palette): Uint8Array {
   });
 }
 
-/** Where a paste goes: where it was copied from when that's inside the document, else centered on it. */
-export function pasteRect(doc: PixelDocument, clip: PixelClip): Rect {
+/** Where a paste goes on a layer `size`: where it was copied from when that's on it, else centered. */
+export function pasteRect(size: Size, clip: PixelClip): Rect {
   const { x, y, width, height } = clip.rect;
-  const fits = x >= 0 && y >= 0 && x + width <= doc.width && y + height <= doc.height;
-  return fits ? clip.rect : centeredRect(doc, width, height);
+  const fits = x >= 0 && y >= 0 && x + width <= size.width && y + height <= size.height;
+  return fits ? clip.rect : centeredRect(size, width, height);
 }
 
 /**
@@ -127,11 +135,11 @@ export function pasteRect(doc: PixelDocument, clip: PixelClip): Rect {
  * one), ready to be moved. One undoable edit.
  */
 export function pasteEdit(doc: PixelDocument, layer: Layer, clip: PixelClip, label = 'Paste'): Edit | null {
-  const area = { rect: pasteRect(doc, clip), bits: clip.bits };
+  const area = { rect: pasteRect(layer, clip), bits: clip.bits };
   const extrusion = clip.extrusion?.slice() ?? defaultExtrusions(clip.pixels.length);
   return placeFloatingEdit(doc, layer, clipIndices(clip, doc.palette), extrusion, area, label);
 }
 
-function centeredRect(doc: PixelDocument, width: number, height: number): Rect {
-  return { x: Math.floor((doc.width - width) / 2), y: Math.floor((doc.height - height) / 2), width, height };
+function centeredRect(size: Size, width: number, height: number): Rect {
+  return { x: Math.floor((size.width - width) / 2), y: Math.floor((size.height - height) / 2), width, height };
 }

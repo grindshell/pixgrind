@@ -463,6 +463,19 @@ body,
   font-size: 12px;
 }
 
+/* Over the canvas: which side of the model it edits. */
+.perspective-bar {
+  flex-wrap: wrap;
+}
+
+.perspective-bar .pane-button {
+  background: rgb(27 27 34 / 0.85);
+}
+
+.perspective-bar .pane-button[aria-pressed='false'] {
+  color: var(--muted);
+}
+
 .pane-splitter {
   position: absolute;
   top: 0;

@@ -62,7 +62,7 @@ export function attachClipboard(target: Document, editor: Editor, report: (messa
     if (file && !(clip && clipIsNewest)) {
       const image = await decodeImage(file);
       // Our own copy comes back through PNG slightly changed if it has translucent colors.
-      if (!clip || !clipMatchesImage(clip, image)) source = clipFromImage(image, editor.doc);
+      if (!clip || !clipMatchesImage(clip, image)) source = clipFromImage(image, editor.doc.palette, editor.plane);
     }
     if (!source) return;
     const layer = editor.activeLayer;

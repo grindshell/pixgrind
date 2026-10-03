@@ -1,5 +1,6 @@
 import type { Rgba } from '../core/color.ts';
 import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, type ImageColorMode } from '../core/documentEdits.ts';
+import { planeSize, type Facing } from '../core/facing.ts';
 import { documentImage, flattenImage, upscaleImage } from '../core/image.ts';
 import { buildMesh, buildVoxelModel } from '../core/model.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
@@ -33,15 +34,16 @@ export async function openImageFile(editor: Editor, file: File, mode: ImageColor
   return `Opened ${file.name} (${image.width}×${image.height}, ${how}).`;
 }
 
-/** Adds an image file as a new layer above the active one, mapped to the current palette (undoable). */
+/** Adds an image file as a new layer above the active one, on the side being edited, mapped to the current palette (undoable). */
 export async function addImageLayer(editor: Editor, file: File): Promise<string> {
   const image = await decodeImage(file);
-  const { doc } = editor;
-  const edit = importImageLayerEdit(doc, image, fileBaseName(file.name), editor.activeLayerIndex + 1);
+  const { doc, facing } = editor;
+  const edit = importImageLayerEdit(doc, facing, image, fileBaseName(file.name), editor.activeLayerIndex + 1);
   if (!editor.perform(edit)) throw new Error(BUSY_MESSAGE);
   editor.selectLayer(edit.layer.id);
-  const cropped = image.width > doc.width || image.height > doc.height;
-  return `Added ${file.name} as a layer${cropped ? `, cropped to ${doc.width}×${doc.height}` : ''}.`;
+  const { width, height } = edit.layer;
+  const cropped = image.width > width || image.height > height;
+  return `Added ${file.name} as a layer${cropped ? `, cropped to ${width}×${height}` : ''}.`;
 }
 
 /**
@@ -67,8 +69,8 @@ export async function openProjectFile(editor: Editor, file: File): Promise<strin
   }
   editor.markSaved();
   if (reference) editor.setReference(reference);
-  const { width, height, layers } = editor.doc;
-  const parts = [`${width}×${height}`, `${layers.length} ${layers.length === 1 ? 'layer' : 'layers'}`];
+  const { width, height, depth, layers } = editor.doc;
+  const parts = [`${width}×${height}×${depth}`, `${layers.length} ${layers.length === 1 ? 'layer' : 'layers'}`];
   if (reference) parts.push('with its reference image');
   return `Opened ${file.name} (${parts.join(', ')}).${note}`;
 }
@@ -100,19 +102,24 @@ export interface ExportOptions {
   scale: number;
   /** Fills transparency for formats without it (JPEG). */
   background: Rgba;
+  /** The side whose layers to export. */
+  facing: Facing;
 }
 
-/** Encodes the visible layers as an image file. */
-export async function renderExport(doc: PixelDocument, { format, scale, background }: ExportOptions): Promise<Blob> {
-  checkExportSize(doc.width * scale, doc.height * scale);
-  let image = upscaleImage(documentImage(doc), scale);
+/** Encodes one side's visible layers as an image file. */
+export async function renderExport(doc: PixelDocument, { format, scale, background, facing }: ExportOptions): Promise<Blob> {
+  const { width, height } = planeSize(doc, facing);
+  checkExportSize(width * scale, height * scale);
+  let image = upscaleImage(documentImage(doc, facing), scale);
   if (format === 'jpeg') image = flattenImage(image, background);
   return encodeImage(image, format);
 }
 
-export function exportFileName(doc: PixelDocument, { format, scale }: ExportOptions): string {
+/** `<name>[-<side>][@<scale>x].<ext>`: the side is left out for the front. */
+export function exportFileName(doc: PixelDocument, { format, scale, facing }: ExportOptions): string {
+  const side = facing === 'front' ? '' : `-${facing}`;
   const suffix = scale > 1 ? `@${scale}x` : '';
-  return `${safeFileName(doc.name)}${suffix}.${IMAGE_FORMATS[format].extension}`;
+  return `${safeFileName(doc.name)}${side}${suffix}.${IMAGE_FORMATS[format].extension}`;
 }
 
 /** Encodes and downloads the image. */
@@ -120,7 +127,7 @@ export async function exportImage(editor: Editor, options: ExportOptions): Promi
   const blob = await renderExport(editor.doc, options);
   const fileName = exportFileName(editor.doc, options);
   downloadBlob(blob, fileName);
-  const { width, height } = editor.doc;
+  const { width, height } = planeSize(editor.doc, options.facing);
   return `Exported ${fileName} (${width * options.scale}×${height * options.scale}).`;
 }
 

@@ -1,15 +1,8 @@
 import { cellExtrusion, cellIndex, packCell, type Cell, type Extrusion } from './extrusion.ts';
-import type { Layer } from './layer.ts';
+import { planeSize, type Facing, type Volume } from './facing.ts';
+import { inLayer, type Layer } from './layer.ts';
 import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
-import {
-  findLayer,
-  inBounds,
-  layerIndex,
-  setCellAt,
-  setPixel,
-  type FloatingPixels,
-  type PixelDocument,
-} from './pixelDocument.ts';
+import { findLayer, layerIndex, setCellAt, setPixel, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
 import { maskHas, type Mask } from './mask.ts';
 
 /** A pixel-level change to one layer, stored as a diff. */
@@ -70,14 +63,12 @@ export interface LayerPropsEdit {
 }
 
 /** Everything that makes up a document, for edits that replace it wholesale. */
-export interface DocumentState {
+export interface DocumentState extends Volume {
   name: string;
-  width: number;
-  height: number;
   palette: Palette;
   /** Layer objects are held by reference, as in layer add/remove edits. */
   layers: Layer[];
-  selection: Mask | null;
+  selections: Record<Facing, Mask | null>;
   floating: FloatingPixels | null;
 }
 
@@ -98,9 +89,10 @@ export function documentState(doc: PixelDocument): DocumentState {
     name: doc.name,
     width: doc.width,
     height: doc.height,
+    depth: doc.depth,
     palette: clonePalette(doc.palette),
     layers: [...doc.layers],
-    selection: doc.selection,
+    selections: { ...doc.selections },
     floating: doc.floating,
   };
 }
@@ -121,9 +113,11 @@ export interface PaletteEdit {
   renumber?: { redo: Uint8Array; undo: Uint8Array };
 }
 
+/** Changes one facing's selection. */
 export interface SelectionEdit {
   kind: 'selection';
   label: string;
+  facing: Facing;
   before: Mask | null;
   after: Mask | null;
 }
@@ -194,6 +188,42 @@ export function followIndex(edit: Edit, index: number, direction: EditDirection)
     }
     default:
       return index;
+  }
+}
+
+/**
+ * Where an edit changed the document, to show it after undo or redo: the
+ * layer it changed and that layer's side, or the side whose selection or
+ * float it changed. Null for edits of the whole document or the palette.
+ */
+export function editedSide(doc: PixelDocument, edit: Edit): { facing: Facing; layerId?: string } | null {
+  const ofLayer = (layerId: string) => {
+    const layer = findLayer(doc, layerId);
+    return layer ? { facing: layer.facing, layerId } : null;
+  };
+  switch (edit.kind) {
+    case 'pixels':
+    case 'layer-move':
+    case 'layer-props':
+      return ofLayer(edit.layerId);
+    case 'layer-add':
+    case 'layer-remove':
+      // Gone after an add is undone or a removal redone: its side is still where the change shows.
+      return ofLayer(edit.layer.id) ?? { facing: edit.layer.facing };
+    case 'selection':
+      return { facing: edit.facing };
+    case 'floating': {
+      const floating = edit.after ?? edit.before;
+      const where = floating && ofLayer(floating.layerId);
+      return where && { facing: where.facing };
+    }
+    case 'batch': {
+      // A float dropped along the way says less than the change itself.
+      const sides = edit.edits.map((part) => [part, editedSide(doc, part)] as const).filter(([, side]) => side);
+      return (sides.find(([part]) => part.kind !== 'floating') ?? sides[0])?.[1] ?? null;
+    }
+    default:
+      return null;
   }
 }
 
@@ -371,22 +401,23 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
       doc.palette = clonePalette(direction === 'redo' ? edit.after : edit.before);
       return;
     case 'selection':
-      doc.selection = direction === 'redo' ? edit.after : edit.before;
+      doc.selections[edit.facing] = direction === 'redo' ? edit.after : edit.before;
       return;
     case 'floating':
       doc.floating = direction === 'redo' ? edit.after : edit.before;
       return;
     case 'document': {
       const state = direction === 'redo' ? edit.after : edit.before;
-      if (state.layers.some((layer) => !layerFits(layer, state.width, state.height))) {
+      if (state.layers.some((layer) => !layerFits(layer, state))) {
         throw conflict(edit, direction, 'layer size does not match the document');
       }
       doc.name = state.name;
       doc.width = state.width;
       doc.height = state.height;
+      doc.depth = state.depth;
       doc.palette = clonePalette(state.palette);
       doc.layers = [...state.layers];
-      doc.selection = state.selection;
+      doc.selections = { ...state.selections };
       doc.floating = state.floating;
       return;
     }
@@ -417,12 +448,19 @@ function applyBatch(doc: PixelDocument, batch: BatchEdit, direction: EditDirecti
 function insertLayer(doc: PixelDocument, layer: Layer, index: number, edit: Edit, direction: EditDirection): void {
   if (index < 0 || index > doc.layers.length) throw conflict(edit, direction, `position ${index} is out of range`);
   if (findLayer(doc, layer.id)) throw conflict(edit, direction, `layer ${layer.id} already exists`);
-  if (!layerFits(layer, doc.width, doc.height)) throw conflict(edit, direction, 'layer size does not match');
+  if (!layerFits(layer, doc)) throw conflict(edit, direction, 'layer size does not match');
   doc.layers.splice(index, 0, layer);
 }
 
-function layerFits(layer: Layer, width: number, height: number): boolean {
-  return layer.pixels.length === width * height && layer.extrusion.length === width * height;
+/** Whether a layer is the size of its facing's plane in `volume`. */
+function layerFits(layer: Layer, volume: Volume): boolean {
+  const { width, height } = planeSize(volume, layer.facing);
+  return (
+    layer.width === width &&
+    layer.height === height &&
+    layer.pixels.length === width * height &&
+    layer.extrusion.length === width * height
+  );
 }
 
 function removeLayer(doc: PixelDocument, layerId: string, edit: Edit, direction: EditDirection): void {
@@ -475,7 +513,7 @@ export interface PixelEditSession {
 }
 
 /** Starts a session. With `clip`, writes outside those pixels are ignored (e.g. painting inside a selection). */
-export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, clip: Mask | null = null): PixelEditSession {
+export function beginPixelEdit(layer: Layer, label: string, clip: Mask | null = null): PixelEditSession {
   // The layer as it was (nothing else writes to it during a session), and
   // the range of offsets written since, so revert and finish look only there.
   const original: PixelState = { pixels: layer.pixels.slice(), extrusion: layer.extrusion.slice() };
@@ -488,7 +526,7 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
   /** The offset of (x, y) when the session may write there, else -1. */
   const writable = (x: number, y: number) => {
     checkOpen();
-    return inBounds(doc, x, y) && (!clip || maskHas(clip, x, y)) ? y * doc.width + x : -1;
+    return inLayer(layer, x, y) && (!clip || maskHas(clip, x, y)) ? y * layer.width + x : -1;
   };
   const wrote = (offset: number) => {
     if (offset < low) low = offset;
@@ -499,8 +537,8 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
     layer,
 
     setPixel(x, y, index) {
-      if (writable(x, y) < 0 || !setPixel(doc, layer, x, y, index)) return false;
-      wrote(y * doc.width + x);
+      if (writable(x, y) < 0 || !setPixel(layer, x, y, index)) return false;
+      wrote(y * layer.width + x);
       return true;
     },
 
@@ -526,7 +564,7 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
       if (pixels.length !== layer.pixels.length || (extrusion && extrusion.length !== layer.pixels.length)) {
         throw new RangeError('Pixel array does not match the layer');
       }
-      const { width } = doc;
+      const { width } = layer;
       for (let offset = 0; offset < pixels.length; offset++) {
         const index = pixels[offset];
         const extrudes = extrusion !== undefined && index !== TRANSPARENT && layer.extrusion[offset] !== extrusion[offset];
@@ -550,8 +588,8 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
 
     restore(x, y) {
       checkOpen();
-      if (!inBounds(doc, x, y)) return false;
-      const offset = y * doc.width + x;
+      if (!inLayer(layer, x, y)) return false;
+      const offset = y * layer.width + x;
       return setCellAt(layer, offset, packCell(original.pixels[offset], original.extrusion[offset]));
     },
 

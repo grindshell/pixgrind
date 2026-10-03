@@ -41,7 +41,7 @@ function accessorFloats(json: Gltf, bin: Uint8Array, index: number): Float32Arra
 const palette = createPalette('test', [0xff0000ff, 0x0000ff80]);
 
 function sampleMesh(): ModelMesh {
-  const doc = createDocument(2, 1, palette);
+  const doc = createDocument(2, 1, palette, 'sample', 3);
   const [layer] = doc.layers;
   layer.pixels.set([1, 2]);
   layer.extrusion[0] = packExtrusion(0, 3);
@@ -77,8 +77,8 @@ describe('meshToGlb', () => {
     expect(Array.from(accessorFloats(json, bin, primitive.attributes.POSITION))).toEqual(
       Array.from(mesh.parts[0].positions, (v) => v * 0.5),
     );
-    expect(position.min).toEqual([-0.5, 0, -1.5]);
-    expect(position.max).toEqual([0, 0.5, 0]);
+    expect(position.min).toEqual([-0.5, 0, -0.75]);
+    expect(position.max).toEqual([0, 0.5, 0.75]);
     expect(json.accessors[primitive.indices]).toMatchObject({ componentType: 5123, count: mesh.parts[0].indices.length });
   });
 

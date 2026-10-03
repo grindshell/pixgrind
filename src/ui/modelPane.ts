@@ -62,12 +62,18 @@ export function createModelPane(editor: Editor): HTMLElement {
     }
   };
 
+  const volumeSize = () => `${doc.width}x${doc.height}x${doc.depth}`;
+
   const frameModel = () => {
     if (!renderer) return;
-    const bounds = mesh?.bounds ?? { min: [-doc.width / 2, 0, -1] as Vec3, max: [doc.width / 2, doc.height, 0] as Vec3 };
+    // An empty model frames the volume.
+    const bounds = mesh?.bounds ?? {
+      min: [-doc.width / 2, 0, -doc.depth / 2] as Vec3,
+      max: [doc.width / 2, doc.height, doc.depth / 2] as Vec3,
+    };
     const { width, height } = renderer.viewSize;
     camera = fitCamera(bounds.min, bounds.max, width / height);
-    framedSize = `${doc.width}x${doc.height}`;
+    framedSize = volumeSize();
     requestDraw();
   };
 
@@ -77,9 +83,9 @@ export function createModelPane(editor: Editor): HTMLElement {
     const model = editor.voxelModel;
     mesh = buildMesh(model, doc.palette);
     renderer.setMesh(mesh);
-    renderer.setGuides(doc.width, doc.height, model.depth);
+    renderer.setGuides(model);
     faces.textContent = `${mesh.faces.toLocaleString()} ${mesh.faces === 1 ? 'face' : 'faces'}`;
-    if (!camera || framedSize !== `${doc.width}x${doc.height}`) frameModel();
+    if (!camera || framedSize !== volumeSize()) frameModel();
     requestDraw();
   });
 
