@@ -4,9 +4,11 @@ import {
   beginPixelEdit,
   combineEdits,
   pixelEditFromArray,
+  pixelEditFromCells,
   pixelEditFromValues,
   type PixelEdit,
 } from './edits.ts';
+import { DEFAULT_EXTRUSION, packCell, packExtrusion } from './extrusion.ts';
 import { rectMask } from './mask.ts';
 import { createPalette } from './palette.ts';
 import { createDocument, getPixel, setPixel, type PixelDocument } from './pixelDocument.ts';
@@ -197,6 +199,78 @@ describe('pixelEditFromArray', () => {
     const doc = docWithPixel(0, 0, 1);
     expect(pixelEditFromArray(doc.layers[0], 'Set', doc.layers[0].pixels.slice())).toBeNull();
     expect(() => pixelEditFromArray(doc.layers[0], 'Set', new Uint8Array(3))).toThrow(RangeError);
+  });
+});
+
+describe('extrusion edits', () => {
+  const DEEP = packExtrusion(2, 6);
+
+  it('records extrusion changes with pixels, and undo/redo applies them', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const [layer] = doc.layers;
+    const session = beginPixelEdit(doc, layer, 'Extrude');
+    expect(session.setExtrusion(0, 0, DEEP)).toBe(true);
+    expect(session.setExtrusion(1, 0, DEEP)).toBe(false); // transparent: nothing to extrude
+    const edit = session.finish()!;
+    expect(Array.from(edit.offsets)).toEqual([0]);
+    expect(edit.extrusion).toEqual({ before: Uint16Array.of(DEFAULT_EXTRUSION), after: Uint16Array.of(DEEP) });
+    applyEdit(doc, edit, 'undo');
+    expect(layer.extrusion[0]).toBe(DEFAULT_EXTRUSION);
+    applyEdit(doc, edit, 'redo');
+    expect(layer.extrusion[0]).toBe(DEEP);
+  });
+
+  it('leaves extrusions out of edits that change none', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const session = beginPixelEdit(doc, doc.layers[0], 'Pencil');
+    session.setPixel(0, 0, 2);
+    expect(session.finish()!.extrusion).toBeUndefined();
+  });
+
+  it('gives newly painted pixels the default extrusion', () => {
+    const doc = createDocument(2, 1, palette);
+    const [layer] = doc.layers;
+    layer.extrusion[0] = DEEP; // left by an erased pixel
+    const session = beginPixelEdit(doc, layer, 'Pencil');
+    session.setPixel(0, 0, 1);
+    expect(layer.extrusion[0]).toBe(DEFAULT_EXTRUSION);
+    const edit = session.finish()!;
+    applyEdit(doc, edit, 'undo');
+    expect([layer.pixels[0], layer.extrusion[0]]).toEqual([0, DEEP]);
+  });
+
+  it('ignores extrusion differences on transparent pixels', () => {
+    const doc = createDocument(2, 1, palette);
+    const [layer] = doc.layers;
+    const session = beginPixelEdit(doc, layer, 'Move');
+    session.setAll(new Uint8Array(2), Uint16Array.of(DEEP, DEEP));
+    expect(session.finish()).toBeNull();
+  });
+
+  it('setCell sets both, and a transparent cell keeps the extrusion', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const [layer] = doc.layers;
+    const session = beginPixelEdit(doc, layer, 'Side');
+    session.setCell(1, 0, packCell(3, DEEP));
+    session.setCell(0, 0, packCell(0, DEEP));
+    expect([layer.pixels[1], layer.extrusion[1]]).toEqual([3, DEEP]);
+    expect([layer.pixels[0], layer.extrusion[0]]).toEqual([0, DEFAULT_EXTRUSION]);
+    session.revert();
+    expect([layer.pixels[1], layer.pixels[0]]).toEqual([0, 1]);
+  });
+
+  it('pixelEditFromCells keeps only real changes', () => {
+    const doc = docWithPixel(0, 0, 1);
+    const [layer] = doc.layers;
+    const cells = new Map([
+      [0, packCell(1, DEFAULT_EXTRUSION)], // unchanged
+      [1, packCell(0, DEEP)], // transparent to transparent
+      [2, packCell(2, DEEP)],
+    ]);
+    const edit = pixelEditFromCells(layer, 'Paste', cells)!;
+    expect(Array.from(edit.offsets)).toEqual([2]);
+    expect(Array.from(edit.after)).toEqual([2]);
+    expect(Array.from(edit.extrusion!.after)).toEqual([DEEP]);
   });
 });
 

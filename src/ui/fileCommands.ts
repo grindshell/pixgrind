@@ -1,8 +1,10 @@
 import type { Rgba } from '../core/color.ts';
 import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, type ImageColorMode } from '../core/documentEdits.ts';
 import { documentImage, flattenImage, upscaleImage } from '../core/image.ts';
+import { buildMesh, buildVoxelModel } from '../core/model.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
 import { downloadBlob, fileBaseName, formatFileSize, safeFileName } from '../io/files.ts';
+import { GLB_EXTENSION, meshToGlb } from '../io/glb.ts';
 import { checkExportSize, decodeImage, encodeImage, IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
 import { isProjectFile, parseProject, PROJECT_EXTENSION, serializeProject } from '../io/projectFile.ts';
 import type { ReferenceImage } from '../render/referenceImage.ts';
@@ -120,4 +122,28 @@ export async function exportImage(editor: Editor, options: ExportOptions): Promi
   downloadBlob(blob, fileName);
   const { width, height } = editor.doc;
   return `Exported ${fileName} (${width * options.scale}×${height * options.scale}).`;
+}
+
+export interface ModelExportOptions {
+  /** Meters per pixel. */
+  scale: number;
+}
+
+/** The 3D model of the visible layers as a GLB file, and how many faces it has. Throws for an empty model. */
+export function renderModelExport(doc: PixelDocument, { scale }: ModelExportOptions): { blob: Blob; faces: number } {
+  const mesh = buildMesh(buildVoxelModel(doc), doc.palette);
+  const blob = new Blob([meshToGlb(mesh, { name: doc.name, scale })], { type: 'model/gltf-binary' });
+  return { blob, faces: mesh.quads };
+}
+
+export function modelFileName(doc: PixelDocument): string {
+  return `${safeFileName(doc.name)}.${GLB_EXTENSION}`;
+}
+
+/** Builds and downloads the 3D model. */
+export async function exportModel(editor: Editor, options: ModelExportOptions): Promise<string> {
+  const { blob, faces } = renderModelExport(editor.doc, options);
+  const fileName = modelFileName(editor.doc);
+  downloadBlob(blob, fileName);
+  return `Exported ${fileName} (${faces.toLocaleString()} faces, ${formatFileSize(blob.size)}).`;
 }

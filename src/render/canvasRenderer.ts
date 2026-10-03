@@ -1,8 +1,10 @@
 import type { BrushMask } from '../core/brush.ts';
 import { alpha, blue, green, red } from '../core/color.ts';
 import { compositeRgba } from '../core/composite.ts';
+import { extrusionDepth, extrusionOffset } from '../core/extrusion.ts';
+import type { Layer } from '../core/layer.ts';
 import { maskOutline, type Mask, type OutlineRun } from '../core/mask.ts';
-import { colorForIndex, type Palette } from '../core/palette.ts';
+import { colorForIndex, TRANSPARENT, type Palette } from '../core/palette.ts';
 import { findLayer, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
 import type { ReferenceImage } from './referenceImage.ts';
@@ -17,6 +19,13 @@ const SELECTION_DARK = '#000000';
 const ANTS_PERIOD = 8;
 /** Floating pixels off the document are drawn this faint, relative to their layer. */
 const FLOATING_OVERHANG_ALPHA = 0.5;
+const SLICE_FILL = 'rgba(91, 140, 255, 0.16)';
+const SLICE_EDGE = 'rgba(91, 140, 255, 0.9)';
+/** Depth labels need this much zoom (CSS px per pixel) to be readable. */
+export const MIN_LABEL_ZOOM = 12;
+const LABEL_DEPTH = '#ffffff';
+const LABEL_OFFSET = '#9dbbff';
+const LABEL_OUTLINE = 'rgba(0, 0, 0, 0.85)';
 
 /** The brush footprint at a document pixel (the one under the pointer). */
 export interface BrushCursor extends Point {
@@ -29,6 +38,10 @@ export interface RenderOverlays {
   brush?: BrushCursor | null;
   /** The path of a lasso being drawn, in document pixels. */
   lasso?: readonly Point[] | null;
+  /** The column the side view shows, marked with a band. */
+  slice?: number | null;
+  /** A layer whose painted pixels get their extrusion written on them (when zoomed in enough to read). */
+  depthLabels?: Layer | null;
 }
 
 export interface RenderOptions {
@@ -53,6 +66,9 @@ export class CanvasRenderer {
   private readonly outlines = new WeakMap<Uint8Array, readonly OutlineRun[]>();
   private imageData: ImageData | null = null;
   private floatingImage: { pixels: Uint8Array; palette: Palette; canvas: HTMLCanvasElement } | null = null;
+  private labels: { canvas: HTMLCanvasElement; key: string; layer: Layer } | null = null;
+  /** Content changed since the labels were drawn. */
+  private labelsStale = true;
   private cssWidth = 0;
   private cssHeight = 0;
 
@@ -81,13 +97,13 @@ export class CanvasRenderer {
 
   /**
    * Draws checkerboard, reference (if below), artwork, reference (if above),
-   * floating pixels off the document, the selection outline, a lasso being
-   * drawn, then the brush outline.
+   * depth labels, the side view's column, floating pixels off the document,
+   * the selection outline, a lasso being drawn, then the brush outline.
    */
   render(
     doc: PixelDocument,
     viewport: Viewport,
-    { reference = null, brush = null, lasso = null }: RenderOverlays = {},
+    { reference = null, brush = null, lasso = null, slice = null, depthLabels = null }: RenderOverlays = {},
     { reuseComposite = false }: RenderOptions = {},
   ): void {
     const { ctx } = this;
@@ -114,6 +130,10 @@ export class CanvasRenderer {
     ctx.drawImage(this.compositeCanvas(doc, reuseComposite), offsetX, offsetY, width, height);
 
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
+    // Content can change while labels aren't shown; they're redrawn the next time they are.
+    if (!reuseComposite) this.labelsStale = true;
+    if (depthLabels && zoom >= MIN_LABEL_ZOOM) this.drawDepthLabels(doc, depthLabels, offsetX, offsetY, zoom, dpr);
+    if (slice !== null && slice < doc.width) this.drawSlice(slice, offsetX, offsetY, height, zoom, dpr);
     if (doc.floating) this.drawFloatingOverhang(doc, doc.floating, offsetX, offsetY, width, height, zoom);
     // A float's outline shows all of it, including any part off the document.
     const outline = doc.floating ?? doc.selection;
@@ -196,6 +216,54 @@ export class CanvasRenderer {
     ctx.setLineDash([2, 2]);
     ctx.strokeStyle = SELECTION_DARK;
     ctx.stroke();
+    ctx.restore();
+  }
+
+  /** A tinted band over one column, edged one device pixel inside it. */
+  private drawSlice(column: number, offsetX: number, offsetY: number, height: number, zoom: number, dpr: number): void {
+    const { ctx } = this;
+    const left = Math.round((offsetX + column * zoom) * dpr);
+    const right = Math.round((offsetX + (column + 1) * zoom) * dpr);
+    const top = Math.round(offsetY * dpr);
+    const bottom = Math.round((offsetY + height) * dpr);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = SLICE_FILL;
+    ctx.fillRect(left, top, right - left, bottom - top);
+    ctx.strokeStyle = SLICE_EDGE;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(left + 0.5, top + 0.5, right - left - 1, bottom - top - 1);
+    ctx.restore();
+  }
+
+  /**
+   * Each painted pixel's depth in its middle, and its offset in the corner
+   * when it isn't 0. Text is slow to draw, so the labels are kept as an image
+   * until the content, layer or view changes.
+   */
+  private drawDepthLabels(
+    doc: PixelDocument,
+    layer: Layer,
+    offsetX: number,
+    offsetY: number,
+    zoom: number,
+    dpr: number,
+  ): void {
+    const { width, height } = this.canvas;
+    const key = `${offsetX},${offsetY},${zoom},${width},${height}`;
+    let cache = this.labels;
+    if (!cache || this.labelsStale || cache.key !== key || cache.layer !== layer) {
+      const canvas = cache?.canvas ?? document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      paintDepthLabels(get2dContext(canvas), doc, layer, offsetX * dpr, offsetY * dpr, zoom * dpr);
+      cache = this.labels = { canvas, key, layer };
+      this.labelsStale = false;
+    }
+    const { ctx } = this;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(cache.canvas, 0, 0);
     ctx.restore();
   }
 
@@ -284,13 +352,74 @@ export class CanvasRenderer {
   }
 }
 
-function get2dContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+/**
+ * Writes the labels for the pixels in view onto a transparent canvas the
+ * size of the screen canvas. Coordinates and `scale` (device px per document
+ * pixel) are in device pixels.
+ */
+function paintDepthLabels(
+  ctx: CanvasRenderingContext2D,
+  doc: PixelDocument,
+  layer: Layer,
+  originX: number,
+  originY: number,
+  scale: number,
+): void {
+  const { width, height } = ctx.canvas;
+  ctx.clearRect(0, 0, width, height);
+  const left = Math.max(0, Math.floor(-originX / scale));
+  const right = Math.min(doc.width, Math.ceil((width - originX) / scale));
+  const top = Math.max(0, Math.floor(-originY / scale));
+  const bottom = Math.min(doc.height, Math.ceil((height - originY) / scale));
+  const depthFont = Math.round(scale * 0.42);
+  const offsetFont = Math.round(scale * 0.28);
+  const font = (size: number) => `600 ${size}px ui-monospace, 'Cascadia Mono', Consolas, monospace`;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = LABEL_OUTLINE;
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const offset = y * doc.width + x;
+      if (layer.pixels[offset] === TRANSPARENT) continue;
+      const extrusion = layer.extrusion[offset];
+      const px = originX + x * scale;
+      const py = originY + y * scale;
+      label(ctx, String(extrusionDepth(extrusion)), px + scale / 2, py + scale / 2, font(depthFont), depthFont, LABEL_DEPTH, 'center');
+      const front = extrusionOffset(extrusion);
+      if (front > 0) {
+        const inset = Math.max(2, scale * 0.08);
+        label(ctx, String(front), px + inset, py + inset + offsetFont / 2, font(offsetFont), offsetFont, LABEL_OFFSET, 'left');
+      }
+    }
+  }
+}
+
+function label(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  font: string,
+  size: number,
+  color: string,
+  align: CanvasTextAlign,
+): void {
+  ctx.font = font;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(2, size / 4);
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+export function get2dContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D context unavailable');
   return ctx;
 }
 
-function createChecker(ctx: CanvasRenderingContext2D): CanvasPattern {
+/** The checkerboard drawn behind transparent pixels. */
+export function createChecker(ctx: CanvasRenderingContext2D): CanvasPattern {
   const tile = document.createElement('canvas');
   tile.width = tile.height = CHECKER_SIZE * 2;
   const tileCtx = get2dContext(tile);

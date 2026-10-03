@@ -1,16 +1,18 @@
 import {
   combineEdits,
   pixelEditFromArray,
+  pixelEditFromCells,
   pixelEditFromValues,
   type Edit,
   type FloatingEdit,
   type PixelEdit,
   type SelectionEdit,
 } from './edits.ts';
+import { packCell, type Cell } from './extrusion.ts';
 import type { Layer } from './layer.ts';
 import { clipMask, invertMask, maskHas, masksEqual, type Mask } from './mask.ts';
 import { TRANSPARENT } from './palette.ts';
-import { documentRect, findLayer, inBounds, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
+import { cellAt, documentRect, findLayer, inBounds, type FloatingPixels, type PixelDocument } from './pixelDocument.ts';
 import { translateRect, type Rect } from './rect.ts';
 
 /** Changes the selection. `after` is clipped to the document. Null when nothing changes. */
@@ -32,17 +34,18 @@ export function selectionChange(before: Mask | null, after: Mask | null, label: 
 }
 
 /**
- * A whole layer's `pixels` moved by (dx, dy), transparent where nothing
- * lands. Pixels that land outside the document are dropped. Writes into
- * `out` (not `pixels` itself) when given, so moves can reuse one buffer.
+ * A whole layer's `values` (its pixels or extrusions) moved by (dx, dy),
+ * zero (transparent) where nothing lands. Values that land outside the
+ * document are dropped. Writes into `out` (not `values` itself), so moves can
+ * reuse one buffer.
  */
-export function shiftedPixels(
+export function shiftedValues<T extends Uint8Array | Uint16Array>(
   doc: PixelDocument,
-  pixels: Uint8Array,
+  values: T,
   dx: number,
   dy: number,
-  out: Uint8Array = new Uint8Array(pixels.length),
-): Uint8Array {
+  out: T,
+): T {
   const { width, height } = doc;
   out.fill(TRANSPARENT);
   // The source columns and rows that stay on the document, copied a row at a time.
@@ -51,7 +54,7 @@ export function shiftedPixels(
   if (right <= left) return out;
   for (let y = Math.max(0, -dy); y < Math.min(height, height - dy); y++) {
     const row = y * width;
-    out.set(pixels.subarray(row + left, row + right), (y + dy) * width + left + dx);
+    out.set(values.subarray(row + left, row + right), (y + dy) * width + left + dx);
   }
   return out;
 }
@@ -59,7 +62,13 @@ export function shiftedPixels(
 /** Moves all of `layer` by (dx, dy), losing pixels moved off the document. Null when nothing would change. */
 export function shiftLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy: number, label = 'Move'): PixelEdit | null {
   if (dx === 0 && dy === 0) return null;
-  return pixelEditFromArray(layer, label, shiftedPixels(doc, layer.pixels, dx, dy));
+  const { pixels, extrusion } = layer;
+  return pixelEditFromArray(
+    layer,
+    label,
+    shiftedValues(doc, pixels, dx, dy, new Uint8Array(pixels.length)),
+    shiftedValues(doc, extrusion, dx, dy, new Uint16Array(extrusion.length)),
+  );
 }
 
 /*
@@ -73,16 +82,26 @@ export function shiftLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy:
  * row-major over `area.rect`, with pixels outside the mask transparent.
  */
 export function selectedPixels(doc: PixelDocument, layer: Layer, area: Mask): Uint8Array {
-  const { rect, bits } = area;
-  const pixels = new Uint8Array(rect.width * rect.height);
-  for (let j = 0; j < rect.height; j++) {
-    const start = (rect.y + j) * doc.width + rect.x;
-    pixels.set(layer.pixels.subarray(start, start + rect.width), j * rect.width);
-  }
+  const pixels = copyArea(doc, layer.pixels, area.rect, new Uint8Array(area.rect.width * area.rect.height));
+  const { bits } = area;
   if (bits) {
     for (let i = 0; i < bits.length; i++) if (!bits[i]) pixels[i] = TRANSPARENT;
   }
   return pixels;
+}
+
+/** A copy of `layer`'s extrusions in `area` (inside the document), laid out as `selectedPixels`. */
+export function selectedExtrusion(doc: PixelDocument, layer: Layer, area: Mask): Uint16Array {
+  return copyArea(doc, layer.extrusion, area.rect, new Uint16Array(area.rect.width * area.rect.height));
+}
+
+/** Copies the layer-sized `values` in `rect` (inside the document) into `out`, row-major over `rect`. */
+function copyArea<T extends Uint8Array | Uint16Array>(doc: PixelDocument, values: T, rect: Rect, out: T): T {
+  for (let j = 0; j < rect.height; j++) {
+    const start = (rect.y + j) * doc.width + rect.x;
+    out.set(values.subarray(start, start + rect.width), j * rect.width);
+  }
+  return out;
 }
 
 /** Lifts the selected pixels of `layer` into a float at the same place. Null without a selection. */
@@ -90,12 +109,19 @@ export function liftSelection(doc: PixelDocument, layer: Layer): FloatingPixels 
   const { selection } = doc;
   if (!selection) return null;
   const pixels = selectedPixels(doc, layer, selection);
-  // Under each lifted pixel is the hole it leaves: transparent, Uint8Array's default.
-  return { layerId: layer.id, rect: selection.rect, bits: selection.bits, pixels, under: new Uint8Array(pixels.length) };
+  return {
+    layerId: layer.id,
+    rect: selection.rect,
+    bits: selection.bits,
+    pixels,
+    extrusion: selectedExtrusion(doc, layer, selection),
+    // Under each lifted pixel is the hole it leaves: a transparent cell, the array's default.
+    under: new Uint32Array(pixels.length),
+  };
 }
 
 /**
- * Moves a float by (dx, dy): new values for every layer pixel it touches
+ * Moves a float by (dx, dy): new cells for every layer pixel it touches
  * (what it covered comes back, then its non-transparent pixels are stamped
  * at the new place), and the moved float. Pixels that land outside the
  * document stay in the float.
@@ -106,52 +132,54 @@ export function moveFloating(
   floating: FloatingPixels,
   dx: number,
   dy: number,
-): { values: Map<number, number>; moved: FloatingPixels } {
-  const values = unstampedValues(doc, floating);
+): { cells: Map<number, Cell>; moved: FloatingPixels } {
+  const cells = unstampedCells(doc, floating);
   const rect = translateRect(floating.rect, dx, dy);
-  const under = stampValues(doc, layer, floating.pixels, rect, values);
-  return { values, moved: { ...floating, rect, under } };
+  const under = stampCells(doc, layer, floating, rect, cells);
+  return { cells, moved: { ...floating, rect, under } };
 }
 
 /**
  * Puts new pixels down as a float on `layer`, replacing any current float.
  * `area` is its shape and place (which may extend past the document), and
- * `pixels` are row-major over `area.rect`, transparent outside the mask.
- * Pasting does this.
+ * `pixels` and their `extrusion` are row-major over `area.rect`, pixels
+ * transparent outside the mask. Pasting does this.
  */
 export function placeFloatingEdit(
   doc: PixelDocument,
   layer: Layer,
   pixels: Uint8Array,
+  extrusion: Uint16Array,
   area: Mask,
   label: string,
 ): Edit | null {
-  const values = new Map<number, number>();
-  const under = stampValues(doc, layer, pixels, area.rect, values);
-  const floating: FloatingPixels = { layerId: layer.id, rect: area.rect, bits: area.bits, pixels, under };
+  const cells = new Map<number, Cell>();
+  const under = stampCells(doc, layer, { pixels, extrusion }, area.rect, cells);
+  const floating: FloatingPixels = { layerId: layer.id, rect: area.rect, bits: area.bits, pixels, extrusion, under };
   return combineEdits(label, [
-    pixelEditFromValues(layer, label, values),
+    pixelEditFromCells(layer, label, cells),
     floatingChange(doc.floating, floating, label),
     selectionChange(doc.selection, clipMask(area, doc.width, doc.height), label),
   ]);
 }
 
 /**
- * Adds to `values` the stamping of `pixels` at `rect` (non-transparent
- * pixels inside the document), reading the layer through `values`. Returns
- * what each stamped pixel covers.
+ * Adds to `cells` the stamping of `lifted` at `rect` (non-transparent pixels
+ * inside the document), reading the layer through `cells`. Returns what each
+ * stamped pixel covers.
  */
-function stampValues(
+function stampCells(
   doc: PixelDocument,
   layer: Layer,
-  pixels: Uint8Array,
+  lifted: Pick<FloatingPixels, 'pixels' | 'extrusion'>,
   rect: Rect,
-  values: Map<number, number>,
-): Uint8Array {
-  const under = new Uint8Array(pixels.length);
+  cells: Map<number, Cell>,
+): Uint32Array {
+  const { pixels, extrusion } = lifted;
+  const under = new Uint32Array(pixels.length);
   forEachStamped(doc, pixels, rect, (i, offset) => {
-    under[i] = values.get(offset) ?? layer.pixels[offset];
-    values.set(offset, pixels[i]);
+    under[i] = cells.get(offset) ?? cellAt(layer, offset);
+    cells.set(offset, packCell(pixels[i], extrusion[i]));
   });
   return under;
 }
@@ -166,9 +194,9 @@ export function moveSelectionEdit(doc: PixelDocument, layer: Layer, dx: number, 
   const origin = doc.floating?.layerId === layer.id ? doc.floating : liftSelection(doc, layer);
   if (!origin) return shiftLayerEdit(doc, layer, dx, dy, label);
   if (dx === 0 && dy === 0) return null;
-  const { values, moved } = moveFloating(doc, layer, origin, dx, dy);
+  const { cells, moved } = moveFloating(doc, layer, origin, dx, dy);
   return combineEdits(label, [
-    pixelEditFromValues(layer, label, values),
+    pixelEditFromCells(layer, label, cells),
     floatingChange(doc.floating, moved, label),
     selectionChange(doc.selection, clipMask(moved, doc.width, doc.height), label),
   ]);
@@ -189,15 +217,15 @@ export function deleteFloatingEdit(doc: PixelDocument, label = 'Delete'): Edit |
   const { floating } = doc;
   if (!floating) return null;
   const layer = findLayer(doc, floating.layerId);
-  const pixels = layer ? pixelEditFromValues(layer, label, unstampedValues(doc, floating)) : null;
+  const pixels = layer ? pixelEditFromCells(layer, label, unstampedCells(doc, floating)) : null;
   return combineEdits(label, [pixels, floatingChange(floating, null, label)]);
 }
 
-/** Layer values that put back what the float covers. */
-function unstampedValues(doc: PixelDocument, floating: FloatingPixels): Map<number, number> {
-  const values = new Map<number, number>();
-  forEachStamped(doc, floating.pixels, floating.rect, (i, offset) => values.set(offset, floating.under[i]));
-  return values;
+/** Layer cells that put back what the float covers. */
+function unstampedCells(doc: PixelDocument, floating: FloatingPixels): Map<number, Cell> {
+  const cells = new Map<number, Cell>();
+  forEachStamped(doc, floating.pixels, floating.rect, (i, offset) => cells.set(offset, floating.under[i]));
+  return cells;
 }
 
 /** Calls `fn` for each non-transparent pixel of `pixels` (laid out over `rect`) that is inside the document. */

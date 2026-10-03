@@ -3,7 +3,8 @@ import { applyEdit, editSetsFloating, type Edit } from './edits.ts';
 import { History } from './history.ts';
 import { rectMask, type Mask } from './mask.ts';
 import { createPalette } from './palette.ts';
-import { createDocument, type PixelDocument } from './pixelDocument.ts';
+import { DEFAULT_EXTRUSION, packExtrusion } from './extrusion.ts';
+import { cellAt, createDocument, type PixelDocument } from './pixelDocument.ts';
 import type { Rect } from './rect.ts';
 import {
   clearSelectionEdit,
@@ -15,7 +16,7 @@ import {
   moveSelectionEdit,
   selectionChange,
   selectionEdit,
-  shiftedPixels,
+  shiftedValues,
   shiftLayerEdit,
 } from './selection.ts';
 
@@ -86,10 +87,11 @@ describe('invertSelectionEdit', () => {
   });
 });
 
-describe('shiftedPixels', () => {
+describe('shiftedValues', () => {
   const shifted = (source: string[], dx: number, dy: number, out?: Uint8Array): string[] => {
     const doc = docFrom(source);
-    doc.layers[0].pixels.set(shiftedPixels(doc, doc.layers[0].pixels, dx, dy, out));
+    const { pixels } = doc.layers[0];
+    pixels.set(shiftedValues(doc, pixels, dx, dy, out ?? new Uint8Array(pixels.length)));
     return rows(doc);
   };
 
@@ -208,8 +210,8 @@ describe('floating selections', () => {
     doc.selection = rectMask({ x: 0, y: 0, width: 2, height: 2 });
     const floating = liftSelection(doc, doc.layers[0]);
     expect(Array.from(floating!.pixels)).toEqual([1, 2, 3, 0]);
-    const { values } = moveFloating(doc, doc.layers[0], floating!, 0, 0);
-    for (const [offset, value] of values) expect(doc.layers[0].pixels[offset]).toBe(value);
+    const { cells } = moveFloating(doc, doc.layers[0], floating!, 0, 0);
+    for (const [offset, cell] of cells) expect(cellAt(doc.layers[0], offset)).toBe(cell);
   });
 
   it('moves only the pixels in a non-rectangular selection, with its shape', () => {
@@ -274,5 +276,38 @@ describe('clearSelectionEdit', () => {
     expect(clearSelectionEdit(doc, doc.layers[0])).toBeNull();
     doc.selection = rectMask({ x: 1, y: 0, width: 2, height: 1 });
     expect(clearSelectionEdit(doc, doc.layers[0])).toBeNull();
+  });
+});
+
+describe('moving extrusions with pixels', () => {
+  const DEEP = packExtrusion(2, 5);
+  const extrusions = (doc: PixelDocument) => Array.from(doc.layers[0].extrusion);
+
+  it('floats carry extrusions, put back what they covered, and undo', () => {
+    const doc = docFrom(['1030']);
+    const [layer] = doc.layers;
+    layer.extrusion[0] = DEEP;
+    layer.extrusion[2] = packExtrusion(0, 3);
+    const history = new History();
+    doc.selection = rectMask({ x: 0, y: 0, width: 1, height: 1 });
+    perform(doc, history, moveSelectionEdit(doc, layer, 2, 0));
+    expect(rows(doc)).toEqual(['0010']);
+    expect(layer.extrusion[2]).toBe(DEEP);
+    perform(doc, history, moveSelectionEdit(doc, layer, 1, 0));
+    expect(rows(doc)).toEqual(['0031']);
+    expect(layer.extrusion[2]).toBe(packExtrusion(0, 3));
+    expect(layer.extrusion[3]).toBe(DEEP);
+    history.undo(doc);
+    history.undo(doc);
+    expect(rows(doc)).toEqual(['1030']);
+    expect([layer.extrusion[0], layer.extrusion[2]]).toEqual([DEEP, packExtrusion(0, 3)]);
+  });
+
+  it('whole-layer moves shift extrusions too', () => {
+    const doc = docFrom(['120']);
+    doc.layers[0].extrusion.set([DEEP, DEFAULT_EXTRUSION, DEFAULT_EXTRUSION]);
+    applyEdit(doc, shiftLayerEdit(doc, doc.layers[0], 1, 0)!, 'redo');
+    expect(rows(doc)).toEqual(['012']);
+    expect(extrusions(doc).slice(1)).toEqual([DEEP, DEFAULT_EXTRUSION]);
   });
 });

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_EXTRUSION, packExtrusion } from '../core/extrusion.ts';
 import { createLayer } from '../core/layer.ts';
 import { rectMask } from '../core/mask.ts';
 import { createPalette } from '../core/palette.ts';
 import { createDocument, setPixel, type PixelDocument } from '../core/pixelDocument.ts';
 import { MAX_REFERENCE_SCALE } from '../core/referencePlacement.ts';
-import { deflate, toBase64 } from './bytes.ts';
+import { deflate, toBase64, uint16ToBytes } from './bytes.ts';
 import {
   isProjectFile,
   parseProject,
@@ -42,7 +43,7 @@ function sampleReference(): ProjectReference {
   };
 }
 
-/** A minimal valid version-1 file, for corrupting one field at a time. */
+/** A minimal valid file, for corrupting one field at a time. */
 async function sampleJson(): Promise<Record<string, unknown>> {
   return JSON.parse(await serializeProject(sampleDoc())) as Record<string, unknown>;
 }
@@ -104,6 +105,26 @@ describe('project files', () => {
     expect(loaded.name).toBe('hero');
   });
 
+  it('round-trips extrusions, and leaves them out when all are the default', async () => {
+    const doc = sampleDoc();
+    expect(layersOf(JSON.parse(await serializeProject(doc)) as Record<string, unknown>)[0]).not.toHaveProperty('extrusion');
+    doc.layers[0].extrusion[0] = packExtrusion(3, 7);
+    doc.layers[0].extrusion[1] = packExtrusion(9, 9); // transparent pixel: not saved
+    const json = JSON.parse(await serializeProject(doc)) as Record<string, unknown>;
+    expect(layersOf(json)[0]).toHaveProperty('extrusion');
+    expect(layersOf(json)[1]).not.toHaveProperty('extrusion');
+    const { document: loaded } = await parseProject(JSON.stringify(json));
+    expect(loaded.layers[0].extrusion[0]).toBe(packExtrusion(3, 7));
+    expect(loaded.layers[0].extrusion[1]).toBe(DEFAULT_EXTRUSION);
+  });
+
+  it('reads version 1 files, which have no extrusions', async () => {
+    const json = { ...(await sampleJson()), version: 1 };
+    const { document: loaded } = await parseProject(JSON.stringify(json));
+    expect(loaded.layers[0].pixels[0]).toBe(1);
+    expect(loaded.layers[0].extrusion.every((e) => e === DEFAULT_EXTRUSION)).toBe(true);
+  });
+
   it('recognizes project files by extension', () => {
     expect(isProjectFile({ name: 'hero.pixgrind' })).toBe(true);
     expect(isProjectFile({ name: 'HERO.PIXGRIND' })).toBe(true);
@@ -162,6 +183,24 @@ describe('parseProject errors', () => {
     const long = await sampleJson();
     layersOf(long)[0].pixels = toBase64(await deflate(new Uint8Array(16)));
     await expect(parse(long)).rejects.toThrow(/layer 1 pixel data is corrupted/);
+  });
+
+  it('rejects extrusion data that is corrupt, the wrong size, or 0 deep', async () => {
+    const extruded = async (values: Uint16Array) => {
+      const json = await sampleJson();
+      layersOf(json)[0].extrusion = toBase64(await deflate(uint16ToBytes(values)));
+      return json;
+    };
+    const corrupt = await sampleJson();
+    layersOf(corrupt)[0].extrusion = 'AAAA';
+    await expect(parse(corrupt)).rejects.toThrow(/layer 1 extrusion data is corrupted/);
+    await expect(parse(await extruded(new Uint16Array(14).fill(1)))).rejects.toThrow(/14 extrusions for 15 pixels/);
+    // Pixel 0 is painted; pixel 1 isn't, so its 0 doesn't matter.
+    const zeroDeep = new Uint16Array(15).fill(1);
+    zeroDeep[1] = 0;
+    await expect(parse(await extruded(zeroDeep))).resolves.toBeTruthy();
+    zeroDeep[0] = 0x0400; // offset 4, depth 0
+    await expect(parse(await extruded(zeroDeep))).rejects.toThrow(/layer 1 has a pixel extruded 0 deep/);
   });
 
   it('makes pixel indices past the palette transparent, as they render', async () => {

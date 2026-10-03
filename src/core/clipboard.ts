@@ -1,5 +1,6 @@
 import { alpha, blue, green, red, type Rgba } from './color.ts';
 import type { Edit } from './edits.ts';
+import { defaultExtrusions } from './extrusion.ts';
 import { indexImageToPalette, type RgbaImage } from './image.ts';
 import type { Layer } from './layer.ts';
 import { TRANSPARENT, type Palette } from './palette.ts';
@@ -7,7 +8,7 @@ import { nearestColorIndex } from './paletteEdits.ts';
 import { documentRect, MAX_DOCUMENT_SIZE, type PixelDocument } from './pixelDocument.ts';
 import { rectMask, type Mask } from './mask.ts';
 import type { Rect } from './rect.ts';
-import { clearAreaEdit, deleteFloatingEdit, placeFloatingEdit, selectedPixels } from './selection.ts';
+import { clearAreaEdit, deleteFloatingEdit, placeFloatingEdit, selectedExtrusion, selectedPixels } from './selection.ts';
 
 /**
  * Copied pixels, independent of the document they came from. As a mask it's
@@ -17,6 +18,8 @@ import { clearAreaEdit, deleteFloatingEdit, placeFloatingEdit, selectedPixels } 
 export interface PixelClip extends Mask {
   /** Palette indices, row-major over `rect`, transparent outside the mask. */
   pixels: Uint8Array;
+  /** The pixels' extrusions, parallel to `pixels`. Absent (e.g. for images from other apps): all default. */
+  extrusion?: Uint16Array;
   /** The palette's colors when copied, so a paste keeps the look even if the palette has changed since. */
   colors: readonly Rgba[];
 }
@@ -29,10 +32,17 @@ export function copyPixels(doc: PixelDocument, layer: Layer): PixelClip {
   const colors = [...doc.palette.colors];
   const { floating } = doc;
   if (floating?.layerId === layer.id) {
-    return { rect: floating.rect, bits: floating.bits, pixels: floating.pixels.slice(), colors };
+    const { rect, bits, pixels, extrusion } = floating;
+    return { rect, bits, pixels: pixels.slice(), extrusion: extrusion.slice(), colors };
   }
   const area = doc.selection ?? rectMask(documentRect(doc));
-  return { rect: area.rect, bits: area.bits, pixels: selectedPixels(doc, layer, area), colors };
+  return {
+    rect: area.rect,
+    bits: area.bits,
+    pixels: selectedPixels(doc, layer, area),
+    extrusion: selectedExtrusion(doc, layer, area),
+    colors,
+  };
 }
 
 /** Removes what `copyPixels` took (cut): the floating pixels, else the selection's or whole layer's. */
@@ -118,7 +128,8 @@ export function pasteRect(doc: PixelDocument, clip: PixelClip): Rect {
  */
 export function pasteEdit(doc: PixelDocument, layer: Layer, clip: PixelClip, label = 'Paste'): Edit | null {
   const area = { rect: pasteRect(doc, clip), bits: clip.bits };
-  return placeFloatingEdit(doc, layer, clipIndices(clip, doc.palette), area, label);
+  const extrusion = clip.extrusion?.slice() ?? defaultExtrusions(clip.pixels.length);
+  return placeFloatingEdit(doc, layer, clipIndices(clip, doc.palette), extrusion, area, label);
 }
 
 function centeredRect(doc: PixelDocument, width: number, height: number): Rect {

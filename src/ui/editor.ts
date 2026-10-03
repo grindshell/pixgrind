@@ -10,9 +10,11 @@ import {
   type PixelEdit,
   type PixelEditSession,
 } from '../core/edits.ts';
+import { MAX_DEPTH, MAX_OFFSET, MIN_DEPTH } from '../core/extrusion.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import type { Mask, SelectionMode } from '../core/mask.ts';
+import { buildVoxelModel, type VoxelModel } from '../core/model.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { findLayer, layerIndex, type FloatingPixels, type PixelDocument } from '../core/pixelDocument.ts';
 import type { Point } from '../core/raster.ts';
@@ -21,21 +23,33 @@ import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage
 import { fitViewport, type Viewport } from '../render/viewport.ts';
 import { attachCanvasInput } from './canvasInput.ts';
 import { attachClipboard } from './clipboard.ts';
-import { el } from './dom.ts';
+import { el, watchDevicePixelRatio } from './dom.ts';
 import { createFilePanel } from './filePanel.ts';
 import { createHistoryControls } from './historyControls.ts';
 import { createLayersPanel } from './layersPanel.ts';
+import { createModelPane } from './modelPane.ts';
+import { createModelPanel } from './modelPanel.ts';
 import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
 import { createBrushPanel } from './brushPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
 import { createReferencePanel } from './referencePanel.ts';
 import { createSelectionPanel } from './selectionPanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
+import { createSidePane } from './sidePane.ts';
 import { createToolbar } from './toolbar.ts';
 import { getTool, type ToolId } from './tools.ts';
 
 /** The two paint colors: the left mouse button uses the primary, the right the secondary. */
 export type ColorSlot = 'primary' | 'secondary';
+
+/** Views that open beside the canvas: the side view of one column, and the 3D model. */
+export type Pane = 'side' | 'model';
+
+/** What the Extrude tool paints: boxes `depth` deep, `offset` behind the picture plane. */
+export interface ExtrudeSettings {
+  offset: number;
+  depth: number;
+}
 
 /**
  * Editor session state: the document plus everything about how it is being
@@ -64,6 +78,14 @@ export class Editor {
   pointer: Point | null = null;
   /** Tracing guide shown with the artwork; never part of the document. Change via `setReference`/`updateReference`. */
   reference: ReferenceImage | null = null;
+  /** What the Extrude tool and "Apply" paint. Change via `setExtrude`. */
+  extrude: ExtrudeSettings = { offset: 0, depth: 2 };
+  /** The document column the side view shows. Change via `setSliceColumn`. */
+  sliceColumn = 0;
+  /** Label the active layer's pixels with their depth on the canvas. Change via `setShowDepth`. */
+  showDepth = false;
+  /** Which panes are open beside the canvas. Change via `setPaneOpen`. */
+  readonly panes: Record<Pane, boolean> = { side: false, model: false };
   private activeLayerId: string;
   /** Last known position of the active layer; used to pick a neighbor if it disappears. */
   private activeIndexHint = 0;
@@ -81,7 +103,11 @@ export class Editor {
   /** Whether document content may have changed since the last render, so the layer composite must be redone. */
   private compositeStale = true;
   private documentRevision = 0;
+  /** Goes up whenever content may have changed (every `requestRender('content')`), even mid-stroke. */
+  private contentChanges = 0;
+  private modelCache: { version: number; model: VoxelModel } | null = null;
   private readonly listeners = new Set<() => void>();
+  private readonly renderListeners = new Set<(contentChanged: boolean) => void>();
 
   constructor(doc: PixelDocument, canvas: HTMLCanvasElement) {
     this.doc = doc;
@@ -113,6 +139,14 @@ export class Editor {
    */
   get revision(): number {
     return this.documentRevision;
+  }
+
+  /**
+   * Goes up whenever the document's content may have changed, including
+   * during strokes and live previews, for views that cache what they draw.
+   */
+  get contentVersion(): number {
+    return this.contentChanges;
   }
 
   get activeLayer(): Layer {
@@ -186,6 +220,59 @@ export class Editor {
     if (this.wandContiguous === on) return;
     this.wandContiguous = on;
     this.notify();
+  }
+
+  setExtrude(changes: Partial<ExtrudeSettings>): void {
+    const offset = clampInteger(changes.offset ?? this.extrude.offset, 0, MAX_OFFSET);
+    const depth = clampInteger(changes.depth ?? this.extrude.depth, MIN_DEPTH, MAX_DEPTH);
+    if (offset === this.extrude.offset && depth === this.extrude.depth) return;
+    this.extrude = { offset, depth };
+    this.notify();
+  }
+
+  /** Shows column `x` in the side view (clamped to the document). */
+  setSliceColumn(x: number): void {
+    const column = clampInteger(x, 0, this.doc.width - 1);
+    if (column === this.sliceColumn) return;
+    this.sliceColumn = column;
+    this.requestRender('view');
+    this.notify();
+  }
+
+  setShowDepth(on: boolean): void {
+    if (this.showDepth === on) return;
+    this.showDepth = on;
+    this.requestRender('view');
+    this.notify();
+  }
+
+  setPaneOpen(pane: Pane, open: boolean): void {
+    if (this.panes[pane] === open) return;
+    this.panes[pane] = open;
+    // The canvas marks the side view's column.
+    this.requestRender('view');
+    this.notify();
+  }
+
+  /**
+   * The 3D model of the document as it is now (see `buildVoxelModel`).
+   * Built on demand and kept until content changes, so views can share it.
+   */
+  get voxelModel(): VoxelModel {
+    if (this.modelCache?.version !== this.contentChanges) {
+      this.modelCache = { version: this.contentChanges, model: buildVoxelModel(this.doc) };
+    }
+    return this.modelCache.model;
+  }
+
+  /**
+   * Called after each canvas render, with whether document content may have
+   * changed since the last one. Views that follow the canvas (the side and
+   * 3D views) redraw from here. Returns an unsubscribe function.
+   */
+  onRender(listener: (contentChanged: boolean) => void): () => void {
+    this.renderListeners.add(listener);
+    return () => this.renderListeners.delete(listener);
   }
 
   /** Called by canvas input as the pointer moves over (or leaves) the canvas. */
@@ -371,7 +458,10 @@ export class Editor {
    * composite is reused. When in doubt, leave the default.
    */
   requestRender(change: 'content' | 'view' = 'content'): void {
-    if (change === 'content') this.compositeStale = true;
+    if (change === 'content') {
+      this.compositeStale = true;
+      this.contentChanges++;
+    }
     if (this.renderQueued) return;
     this.renderQueued = true;
     requestAnimationFrame(() => {
@@ -381,9 +471,16 @@ export class Editor {
       this.renderer.render(
         this.doc,
         this.viewport,
-        { reference: this.reference, brush: this.brushCursor(), lasso: this.lasso },
+        {
+          reference: this.reference,
+          brush: this.brushCursor(),
+          lasso: this.lasso,
+          slice: this.panes.side ? this.sliceColumn : null,
+          depthLabels: this.showDepth ? this.activeLayer : null,
+        },
         { reuseComposite },
       );
+      for (const listener of this.renderListeners) listener(!reuseComposite);
     });
   }
 
@@ -407,6 +504,7 @@ export class Editor {
     if (this.doc.width !== this.fittedSize.width || this.doc.height !== this.fittedSize.height) {
       this.fittedSize = { width: this.doc.width, height: this.doc.height };
       this.fitToView();
+      this.sliceColumn = Math.min(this.sliceColumn, this.doc.width - 1);
     }
     this.syncActiveLayer();
     // The paint colors follow their colors when they're renumbered, and stay
@@ -455,8 +553,13 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
     createPaletteLibraryPanel(editor, openPaletteLibrary()),
     createReferencePanel(editor),
     createLayersPanel(editor),
+    createModelPanel(editor),
   );
-  layout.append(sidebar, createToolbar(editor), stage);
+  // The side and 3D views open beside the canvas, sharing its height so the
+  // side view's rows line up with the canvas's.
+  const workspace = el('div', 'workspace');
+  workspace.append(stage, createSidePane(editor), createModelPane(editor));
+  layout.append(sidebar, createToolbar(editor), workspace);
   root.append(layout);
   attachCanvasInput(canvas, editor);
   attachShortcuts(window, editor, filePanel);
@@ -501,18 +604,6 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   return editor;
 }
 
-/**
- * Calls `onChange` whenever `devicePixelRatio` changes, e.g. when the window
- * moves to a monitor with different scaling. ResizeObserver misses this case
- * because the element's CSS size stays the same.
- */
-function watchDevicePixelRatio(onChange: () => void): void {
-  matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
-    'change',
-    () => {
-      onChange();
-      watchDevicePixelRatio(onChange);
-    },
-    { once: true },
-  );
+function clampInteger(value: number, min: number, max: number): number {
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : min;
 }

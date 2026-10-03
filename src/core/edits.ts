@@ -1,9 +1,11 @@
+import { cellExtrusion, cellIndex, packCell, type Cell, type Extrusion } from './extrusion.ts';
 import type { Layer } from './layer.ts';
-import { clonePalette, type Palette } from './palette.ts';
+import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
 import {
   findLayer,
   inBounds,
   layerIndex,
+  setCellAt,
   setPixel,
   type FloatingPixels,
   type PixelDocument,
@@ -21,6 +23,8 @@ export interface PixelEdit {
   /** Palette indices before and after the edit, parallel to `offsets`. */
   before: Uint8Array;
   after: Uint8Array;
+  /** Extrusions before and after, parallel to `offsets`. Absent when the edit changes none. */
+  extrusion?: { before: Uint16Array; after: Uint16Array };
 }
 
 /*
@@ -201,8 +205,9 @@ export function combineEdits(label: string, edits: ReadonlyArray<Edit | null>): 
 }
 
 /**
- * A pixel edit that sets each offset in `values` to its value, keeping only
- * the pixels that actually change. Built unapplied. Null when nothing changes.
+ * A pixel edit that sets each offset in `values` to its palette index,
+ * keeping only the pixels that actually change. Extrusions stay as they are.
+ * Built unapplied. Null when nothing changes.
  */
 export function pixelEditFromValues(layer: Layer, label: string, values: ReadonlyMap<number, number>): PixelEdit | null {
   const changed = [...values].filter(([offset, value]) => layer.pixels[offset] !== value).sort(([a], [b]) => a - b);
@@ -218,27 +223,84 @@ export function pixelEditFromValues(layer: Layer, label: string, values: Readonl
 }
 
 /**
- * A pixel edit that changes `layer` to `after` (laid out like its pixels),
- * keeping only the pixels that differ. Built unapplied. Null when nothing
- * changes. For whole-layer changes, where a map of values would be slow.
+ * A pixel edit that sets each offset in `cells` to its cell (index and
+ * extrusion, see `Cell`), keeping only the pixels that actually change.
+ * Built unapplied. Null when nothing changes.
  */
-export function pixelEditFromArray(layer: Layer, label: string, after: Uint8Array): PixelEdit | null {
-  if (after.length !== layer.pixels.length) throw new RangeError('Pixel array does not match the layer');
-  return diffPixels(layer.id, label, layer.pixels, after, 0, after.length);
+export function pixelEditFromCells(layer: Layer, label: string, cells: ReadonlyMap<number, Cell>): PixelEdit | null {
+  const changed = [...cells]
+    .map(([offset, cell]): [number, number, Extrusion] => {
+      const index = cellIndex(cell);
+      return [offset, index, index === TRANSPARENT ? layer.extrusion[offset] : cellExtrusion(cell)];
+    })
+    .filter(([offset, index, extrusion]) => layer.pixels[offset] !== index || layer.extrusion[offset] !== extrusion)
+    .sort(([a], [b]) => a - b);
+  if (changed.length === 0) return null;
+  const edit: PixelEdit = {
+    kind: 'pixels',
+    label,
+    layerId: layer.id,
+    offsets: Uint32Array.from(changed, ([offset]) => offset),
+    before: Uint8Array.from(changed, ([offset]) => layer.pixels[offset]),
+    after: Uint8Array.from(changed, ([, index]) => index),
+  };
+  if (changed.some(([offset, , extrusion]) => layer.extrusion[offset] !== extrusion)) {
+    edit.extrusion = {
+      before: Uint16Array.from(changed, ([offset]) => layer.extrusion[offset]),
+      after: Uint16Array.from(changed, ([, , extrusion]) => extrusion),
+    };
+  }
+  return edit;
 }
 
-/** An edit from `before` to `after` (both layer-sized) for the offsets in [start, end) where they differ. */
+/**
+ * A pixel edit that changes `layer` to `after` (laid out like its pixels)
+ * and, when given, its extrusions to `afterExtrusion`, keeping only the
+ * pixels that differ. Built unapplied. Null when nothing changes. For
+ * whole-layer changes, where a map of values would be slow.
+ */
+export function pixelEditFromArray(
+  layer: Layer,
+  label: string,
+  after: Uint8Array,
+  afterExtrusion: Uint16Array = layer.extrusion,
+): PixelEdit | null {
+  if (after.length !== layer.pixels.length || afterExtrusion.length !== layer.pixels.length) {
+    throw new RangeError('Pixel array does not match the layer');
+  }
+  return diffPixels(layer.id, label, layer, { pixels: after, extrusion: afterExtrusion }, 0, after.length);
+}
+
+/** A layer's worth of indices and extrusions. */
+interface PixelState {
+  pixels: Uint8Array;
+  extrusion: Uint16Array;
+}
+
+/**
+ * An edit from `before` to `after` (both layer-sized) for the offsets in
+ * [start, end) where they differ. Extrusions count only where the pixel is
+ * painted: elsewhere they mean nothing.
+ */
 function diffPixels(
   layerId: string,
   label: string,
-  before: Uint8Array,
-  after: Uint8Array,
+  before: PixelState,
+  after: PixelState,
   start: number,
   end: number,
 ): PixelEdit | null {
+  const differs = (i: number) =>
+    before.pixels[i] !== after.pixels[i] ||
+    (after.pixels[i] !== TRANSPARENT && before.extrusion[i] !== after.extrusion[i]);
   // Count first, then fill typed arrays: whole-layer edits have a million entries.
   let count = 0;
-  for (let i = start; i < end; i++) if (before[i] !== after[i]) count++;
+  let extruded = false;
+  for (let i = start; i < end; i++) {
+    if (!differs(i)) continue;
+    count++;
+    if (before.extrusion[i] !== after.extrusion[i]) extruded = true;
+  }
   if (count === 0) return null;
   const edit: PixelEdit = {
     kind: 'pixels',
@@ -248,11 +310,18 @@ function diffPixels(
     before: new Uint8Array(count),
     after: new Uint8Array(count),
   };
+  const extrusion = extruded ? { before: new Uint16Array(count), after: new Uint16Array(count) } : undefined;
+  if (extrusion) edit.extrusion = extrusion;
   for (let i = start, k = 0; i < end; i++) {
-    if (before[i] === after[i]) continue;
+    if (!differs(i)) continue;
     edit.offsets[k] = i;
-    edit.before[k] = before[i];
-    edit.after[k++] = after[i];
+    edit.before[k] = before.pixels[i];
+    edit.after[k] = after.pixels[i];
+    if (extrusion) {
+      extrusion.before[k] = before.extrusion[i];
+      extrusion.after[k] = after.extrusion[i];
+    }
+    k++;
   }
   return edit;
 }
@@ -269,8 +338,12 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
     case 'pixels': {
       const layer = requireLayer(doc, edit.layerId, edit, direction);
       const values = direction === 'undo' ? edit.before : edit.after;
-      const { offsets } = edit;
+      const { offsets, extrusion } = edit;
       for (let i = 0; i < offsets.length; i++) layer.pixels[offsets[i]] = values[i];
+      if (extrusion) {
+        const extrusions = direction === 'undo' ? extrusion.before : extrusion.after;
+        for (let i = 0; i < offsets.length; i++) layer.extrusion[offsets[i]] = extrusions[i];
+      }
       return;
     }
     case 'layer-add':
@@ -305,7 +378,7 @@ export function applyEdit(doc: PixelDocument, edit: Edit, direction: EditDirecti
       return;
     case 'document': {
       const state = direction === 'redo' ? edit.after : edit.before;
-      if (state.layers.some((layer) => layer.pixels.length !== state.width * state.height)) {
+      if (state.layers.some((layer) => !layerFits(layer, state.width, state.height))) {
         throw conflict(edit, direction, 'layer size does not match the document');
       }
       doc.name = state.name;
@@ -344,8 +417,12 @@ function applyBatch(doc: PixelDocument, batch: BatchEdit, direction: EditDirecti
 function insertLayer(doc: PixelDocument, layer: Layer, index: number, edit: Edit, direction: EditDirection): void {
   if (index < 0 || index > doc.layers.length) throw conflict(edit, direction, `position ${index} is out of range`);
   if (findLayer(doc, layer.id)) throw conflict(edit, direction, `layer ${layer.id} already exists`);
-  if (layer.pixels.length !== doc.width * doc.height) throw conflict(edit, direction, 'layer size does not match');
+  if (!layerFits(layer, doc.width, doc.height)) throw conflict(edit, direction, 'layer size does not match');
   doc.layers.splice(index, 0, layer);
+}
+
+function layerFits(layer: Layer, width: number, height: number): boolean {
+  return layer.pixels.length === width * height && layer.extrusion.length === width * height;
 }
 
 function removeLayer(doc: PixelDocument, layerId: string, edit: Edit, direction: EditDirection): void {
@@ -373,11 +450,16 @@ export interface PixelEditSession {
   readonly layer: Layer;
   /** Same contract as {@link setPixel}, but remembers each pixel's original value. */
   setPixel(x: number, y: number, index: number): boolean;
+  /** Sets the extrusion of a painted pixel; transparent ones are left alone. Returns whether it changed. */
+  setExtrusion(x: number, y: number, extrusion: Extrusion): boolean;
+  /** Sets a pixel's index and extrusion together (see `setCellAt`). Returns whether it changed. */
+  setCell(x: number, y: number, cell: Cell): boolean;
   /**
-   * Sets every pixel to `pixels` (laid out like the layer's), as `setPixel`
-   * would one by one, only faster. For whole-layer previews (moving a layer).
+   * Sets every pixel to `pixels` (laid out like the layer's), and painted
+   * ones' extrusions to `extrusion` when given, as `setCell` would one by
+   * one, only faster. For whole-layer previews (moving a layer).
    */
-  setAll(pixels: Uint8Array): void;
+  setAll(pixels: Uint8Array, extrusion?: Uint16Array): void;
   /** Restores every pixel written so far to its original value. Used to redraw shape previews. */
   revert(): void;
   /**
@@ -393,12 +475,17 @@ export interface PixelEditSession {
 export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, clip: Mask | null = null): PixelEditSession {
   // The layer as it was (nothing else writes to it during a session), and
   // the range of offsets written since, so revert and finish look only there.
-  const original = layer.pixels.slice();
+  const original: PixelState = { pixels: layer.pixels.slice(), extrusion: layer.extrusion.slice() };
   let low = Infinity;
   let high = -1;
   let finished = false;
   const checkOpen = () => {
     if (finished) throw new Error('Pixel edit session already finished');
+  };
+  /** The offset of (x, y) when the session may write there, else -1. */
+  const writable = (x: number, y: number) => {
+    checkOpen();
+    return inBounds(doc, x, y) && (!clip || maskHas(clip, x, y)) ? y * doc.width + x : -1;
   };
   const wrote = (offset: number) => {
     if (offset < low) low = offset;
@@ -409,28 +496,49 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
     layer,
 
     setPixel(x, y, index) {
-      checkOpen();
-      if (!inBounds(doc, x, y) || (clip && !maskHas(clip, x, y))) return false;
-      if (!setPixel(doc, layer, x, y, index)) return false;
+      if (writable(x, y) < 0 || !setPixel(doc, layer, x, y, index)) return false;
       wrote(y * doc.width + x);
       return true;
     },
 
-    setAll(pixels) {
+    setExtrusion(x, y, extrusion) {
+      const offset = writable(x, y);
+      if (offset < 0 || layer.pixels[offset] === TRANSPARENT || layer.extrusion[offset] === extrusion) return false;
+      layer.extrusion[offset] = extrusion;
+      wrote(offset);
+      return true;
+    },
+
+    setCell(x, y, cell) {
+      const offset = writable(x, y);
+      if (offset < 0 || !setCellAt(layer, offset, cell)) return false;
+      wrote(offset);
+      return true;
+    },
+
+    setAll(pixels, extrusion) {
       checkOpen();
-      if (pixels.length !== layer.pixels.length) throw new RangeError('Pixel array does not match the layer');
+      if (pixels.length !== layer.pixels.length || (extrusion && extrusion.length !== layer.pixels.length)) {
+        throw new RangeError('Pixel array does not match the layer');
+      }
       const { width } = doc;
       for (let offset = 0; offset < pixels.length; offset++) {
-        if (layer.pixels[offset] === pixels[offset]) continue;
+        const index = pixels[offset];
+        const extrudes = extrusion !== undefined && index !== TRANSPARENT && layer.extrusion[offset] !== extrusion[offset];
+        if (layer.pixels[offset] === index && !extrudes) continue;
         if (clip && !maskHas(clip, offset % width, Math.floor(offset / width))) continue;
-        layer.pixels[offset] = pixels[offset];
+        layer.pixels[offset] = index;
+        if (extrudes) layer.extrusion[offset] = extrusion[offset];
         wrote(offset);
       }
     },
 
     revert() {
       checkOpen();
-      if (high >= low) layer.pixels.set(original.subarray(low, high + 1), low);
+      if (high >= low) {
+        layer.pixels.set(original.pixels.subarray(low, high + 1), low);
+        layer.extrusion.set(original.extrusion.subarray(low, high + 1), low);
+      }
       low = Infinity;
       high = -1;
     },
@@ -439,15 +547,13 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
       checkOpen();
       if (!inBounds(doc, x, y)) return false;
       const offset = y * doc.width + x;
-      if (layer.pixels[offset] === original[offset]) return false;
-      layer.pixels[offset] = original[offset];
-      return true;
+      return setCellAt(layer, offset, packCell(original.pixels[offset], original.extrusion[offset]));
     },
 
     finish() {
       finished = true;
       // Pixels painted and then painted back to their original value aren't changes.
-      return high < low ? null : diffPixels(layer.id, label, original, layer.pixels, low, high + 1);
+      return high < low ? null : diffPixels(layer.id, label, original, layer, low, high + 1);
     },
   };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdit, beginPixelEdit, type BatchEdit, type Edit } from './edits.ts';
+import { DEFAULT_EXTRUSION, packExtrusion } from './extrusion.ts';
 import { History } from './history.ts';
 import { createLayer } from './layer.ts';
 import {
@@ -66,6 +67,7 @@ describe('add / duplicate / remove', () => {
     const doc = docWithLayers(1);
     const [source] = doc.layers;
     setPixel(doc, source, 0, 0, 2);
+    source.extrusion[0] = packExtrusion(1, 4);
     source.opacity = 0.5;
     applyEdit(doc, duplicateLayerEdit(doc, source.id), 'redo');
     const copy = doc.layers[1];
@@ -73,8 +75,11 @@ describe('add / duplicate / remove', () => {
     expect(copy.id).not.toBe(source.id);
     expect(copy.opacity).toBe(0.5);
     expect(getPixel(doc, copy, 0, 0)).toBe(2);
+    expect(copy.extrusion[0]).toBe(packExtrusion(1, 4));
     setPixel(doc, copy, 0, 0, 3);
+    copy.extrusion[0] = DEFAULT_EXTRUSION;
     expect(getPixel(doc, source, 0, 0)).toBe(2);
+    expect(source.extrusion[0]).toBe(packExtrusion(1, 4));
   });
 
   it('removes a layer, undo restores it at the same position', () => {
@@ -237,6 +242,18 @@ describe('merge down', () => {
     const doc = docWithLayers(2);
     const edit = mergeDownEdit(doc, doc.layers[1].id);
     expect(edit.edits.map((e) => e.kind)).toEqual(['layer-remove']);
+  });
+
+  it('takes upper extrusions, and refuses when overlapping pixels differ in depth', () => {
+    const doc = twoLayers();
+    const [lower, upper] = doc.layers;
+    upper.extrusion[1] = packExtrusion(1, 3);
+    expect(canMergeDown(doc, upper.id)).toMatchObject({ ok: false, reason: expect.stringMatching(/extrusions/) });
+    lower.extrusion[1] = packExtrusion(1, 3);
+    upper.extrusion[0] = packExtrusion(0, 9); // over a transparent upper pixel: irrelevant
+    applyEdit(doc, mergeDownEdit(doc, upper.id), 'redo');
+    expect(lower.extrusion[1]).toBe(packExtrusion(1, 3));
+    expect(lower.extrusion[0]).toBe(DEFAULT_EXTRUSION);
   });
 });
 

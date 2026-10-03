@@ -44,7 +44,13 @@ export function addLayerEdit(doc: PixelDocument, index = doc.layers.length): Lay
 export function duplicateLayerEdit(doc: PixelDocument, layerId: string): LayerAddEdit {
   const index = requireIndex(doc, layerId);
   const source = doc.layers[index];
-  const copy: Layer = { ...source, id: newId(), name: `${source.name} copy`, pixels: source.pixels.slice() };
+  const copy: Layer = {
+    ...source,
+    id: newId(),
+    name: `${source.name} copy`,
+    pixels: source.pixels.slice(),
+    extrusion: source.extrusion.slice(),
+  };
   return { kind: 'layer-add', label: 'Duplicate layer', layer: copy, index: index + 1 };
 }
 
@@ -99,7 +105,8 @@ export type MergeCheck = { ok: true } | { ok: false; reason: string };
 /**
  * Whether a layer can merge into the one below it. Palette indices can't
  * blend, so a merge is only exact when both layers are visible and fully
- * opaque.
+ * opaque. A pixel has one box in 3D, so where both layers have a pixel their
+ * extrusions must match, or the lower layer's boxes would be lost.
  */
 export function canMergeDown(doc: PixelDocument, layerId: string): MergeCheck {
   const index = layerIndex(doc, layerId);
@@ -109,14 +116,19 @@ export function canMergeDown(doc: PixelDocument, layerId: string): MergeCheck {
   const lower = doc.layers[index - 1];
   if (!upper.visible || !lower.visible) return { ok: false, reason: 'Both layers must be visible' };
   if (upper.opacity !== 1 || lower.opacity !== 1) return { ok: false, reason: 'Both layers must be at 100% opacity' };
+  for (let i = 0; i < upper.pixels.length; i++) {
+    if (upper.pixels[i] !== TRANSPARENT && lower.pixels[i] !== TRANSPARENT && upper.extrusion[i] !== lower.extrusion[i]) {
+      return { ok: false, reason: 'Pixels on both layers have different 3D extrusions' };
+    }
+  }
   return { ok: true };
 }
 
 /**
  * Merges a layer into the one below: the upper layer's non-transparent pixels
- * replace the lower layer's, then the upper layer is removed. Exact for opaque
- * palette colors; a translucent color replaces what was beneath it instead of
- * blending.
+ * replace the lower layer's, extrusions included, then the upper layer is
+ * removed. Exact for opaque palette colors; a translucent color replaces what
+ * was beneath it instead of blending.
  */
 export function mergeDownEdit(doc: PixelDocument, layerId: string): BatchEdit {
   const check = canMergeDown(doc, layerId);
@@ -126,13 +138,16 @@ export function mergeDownEdit(doc: PixelDocument, layerId: string): BatchEdit {
   const lower = doc.layers[index - 1];
 
   const merged = lower.pixels.slice();
+  const mergedExtrusion = lower.extrusion.slice();
   for (let i = 0; i < merged.length; i++) {
-    if (upper.pixels[i] !== TRANSPARENT) merged[i] = upper.pixels[i];
+    if (upper.pixels[i] === TRANSPARENT) continue;
+    merged[i] = upper.pixels[i];
+    mergedExtrusion[i] = upper.extrusion[i];
   }
 
   const label = 'Merge down';
   const edits: Edit[] = [];
-  const pixels = pixelEditFromArray(lower, label, merged);
+  const pixels = pixelEditFromArray(lower, label, merged, mergedExtrusion);
   if (pixels) edits.push(pixels);
   edits.push({ kind: 'layer-remove', label, layer: upper, index });
   return { kind: 'batch', label, edits };

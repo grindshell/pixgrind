@@ -349,9 +349,171 @@ body,
   display: none;
 }
 
+/* The canvas, with the side and 3D views beside it. */
+.workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
 .stage {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
+}
+
+.view-pane {
+  position: relative;
+  flex: none;
+  width: 30%;
+  min-width: 160px;
+  overflow: hidden;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+}
+
+.view-pane[hidden] {
+  display: none;
+}
+
+.model-pane {
+  background: #202029;
+}
+
+.pane-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.side-canvas {
+  image-rendering: pixelated;
+  cursor: crosshair;
+}
+
+.side-canvas.is-locked {
+  cursor: not-allowed;
+}
+
+.model-canvas {
+  cursor: grab;
+}
+
+.model-canvas:active {
+  cursor: grabbing;
+}
+
+/* Floats over the pane's top edge; only its controls take the pointer. */
+.pane-bar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.pane-bar > * {
+  pointer-events: auto;
+}
+
+.pane-title,
+.pane-readout,
+.pane-bar .icon-button {
+  background: rgb(27 27 34 / 0.85);
+  border-radius: 4px;
+}
+
+.pane-title {
+  padding: 3px 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pane-readout {
+  padding: 3px 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pane-readout:empty {
+  display: none;
+}
+
+.pane-hint {
+  color: var(--muted);
+}
+
+.pane-bar .pane-close {
+  margin-left: auto;
+}
+
+.pane-button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.pane-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 5px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-splitter:hover,
+.pane-splitter:active {
+  background: rgb(91 140 255 / 0.5);
+}
+
+.pane-message {
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  left: 16px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pane-message[hidden] {
+  display: none;
+}
+
+/* 3D model panel */
+
+.panel-header .button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.number-field {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.number-field .field-label {
+  flex: none;
+}
+
+.number-input {
+  width: 100%;
 }
 
 .stage-canvas {

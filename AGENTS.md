@@ -18,6 +18,10 @@ Core features:
   trace over. References are never part of the artwork.
 - **Import/export** of common image formats (PNG, JPG, WebP, …) plus a native
   project format that preserves layers and palette.
+- **3D models** from the pixel art: each pixel can be extruded into a box of
+  any depth, starting at any offset behind the picture plane. A side view
+  edits one column's depth directly, a 3D view shows the model, and it
+  exports as `.glb`.
 
 ## Status
 
@@ -30,7 +34,7 @@ Built so far:
 - Tools in a vertical strip beside the canvas: Rectangle select (M), Lasso
   select (Q), Polygonal lasso (Shift+Q), Magic wand (W), Move (V), Pencil
   (B), Eraser (E), Line (L), Rectangle (R), Filled rectangle (Shift+R), Fill
-  (G), Eyedropper (I).
+  (G), Eyedropper (I), Extrude (D).
   - The left button paints the primary color and the right button the
     secondary color (transparent by default, so right-click erases). X
     swaps them.
@@ -108,8 +112,33 @@ Built so far:
 - Layers panel: thumbnails, select, show/hide, rename (double-click), add,
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
+- 3D model (see 3D model below):
+  - Every painted pixel has an extrusion: depth 1–255 and offset 0–255
+    (default 1 deep at offset 0). Moves, floats, copy/paste, merge down,
+    undo and project files carry it with the pixel.
+  - 3D model panel: Side and 3D view toggles, the Extrude tool's depth and
+    offset, Apply to selection (or layer), depth labels on the canvas
+    (zoom 12× or more), and GLB export at a chosen size per pixel.
+  - Extrude tool (D): paints the panel's depth and offset onto painted
+    pixels with the brush; right-click resets them. Pressing also picks the
+    side view's column.
+  - Side view pane: one column from the right, rows level with the canvas.
+    Painting a cell adds that depth to the pixel's box (or makes a new
+    pixel); transparent (right-click by default) takes it away. Alt+click
+    picks the cell's color. ‹ › change the column.
+  - 3D view pane: WebGL 2, drag to orbit, right/middle/Shift-drag to pan,
+    wheel to zoom, double-click or Reset view to frame the model.
+  - Panes open beside the canvas; drag their left edge to resize.
 
 Follow-ups:
+- 3D model:
+  - Model optimization: merge coplanar same-color faces (greedy meshing)
+    in `buildMesh`. Today every pixel's front and back are a quad each, so
+    large fully painted documents make big meshes.
+  - "Diagonal" pixels: a pixel whose extrusion is a slanted face instead of
+    a cube.
+  - A wider side view: edit along rows (top view) as well as columns.
+  - Layer opacity in 3D (today only visibility counts).
 - Files:
   - Save in place with the File System Access API where available (today
     every save is a new download).
@@ -192,25 +221,31 @@ src/
                  strokes), clipboard (copy/cut/paste clips), rect (Rect
                  geometry), mask (pixel sets: selection shapes, lasso,
                  combining, outlines), floodFill (+ colorRegion), image (RGBA
-                 ↔ indices, upscale, flatten), edits (undoable changes),
-                 layerEdits / selection / paletteEdits / documentEdits (edit
+                 ↔ indices, upscale, flatten), extrusion (packed extrusions
+                 and cells, side view cell edits), model (voxel runs, mesh),
+                 edits (undoable changes), layerEdits / selection /
+                 paletteEdits / documentEdits / extrusionEdits (edit
                  constructors), history
   render/        viewport math (zoom/pan/coordinate mapping), CanvasRenderer,
-                 ReferenceImage type
+                 ReferenceImage type, camera (orbit camera and matrices),
+                 ModelRenderer (WebGL 2), SideRenderer
   io/            import/export and persistence: projectFile (.pixgrind
-                 serialize/parse), bytes (base64, zlib), paletteFormats (pure
+                 serialize/parse), bytes (base64, zlib, 16-bit LE), glb (3D
+                 export), paletteFormats (pure
                  text parsers/serializers), paletteLibrary (saved palettes
                  over a storage interface), imageCodec (decode/encode via
                  canvas), paletteImage (PNG swatches), files (download, file
                  picker, file names and sizes)
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
-                 fileCommands (open/save project, open/add/export image),
-                 keyboard shortcuts, clipboard (copy/cut/paste events and
-                 the system clipboard), brush and selection panels,
-                 history controls, file panel, palette and palettes (library)
-                 panels, layers panel, reference panel (+ loadReferenceFile),
-                 DOM helpers (dom.ts) and inline SVG
+                 fileCommands (open/save project, open/add/export image,
+                 export model), keyboard shortcuts, clipboard
+                 (copy/cut/paste events and the system clipboard), brush and
+                 selection panels, history controls, file panel, palette and
+                 palettes (library) panels, layers panel, reference panel (+
+                 loadReferenceFile), 3D model panel (modelPanel), side and 3D
+                 panes (sidePane, modelPane, on paneFrame), throttle
+                 (adaptiveThrottle), DOM helpers (dom.ts) and inline SVG
                  icons (icons.ts)
 public/          static assets served as-is (favicon.svg)
 ```
@@ -314,6 +349,8 @@ storage without updating this section and the palette-swap design.
   opacity, because palette indices can't blend. The upper layer's
   non-transparent pixels replace the lower layer's. A translucent palette
   color therefore replaces what was under it instead of blending with it.
+  It also requires pixels both layers have to share an extrusion, since a
+  merge would lose the lower one's box in 3D.
 - Panels re-render on every editor change, so they keep that cheap: layer
   thumbnails are sampled down to at most 64px (`layerThumbnailRgba`), and
   the palette panel recounts color usage only when `Editor.revision`
@@ -339,7 +376,8 @@ storage without updating this section and the palette-swap design.
   an anchor, center, and the logarithmic slider mapping. Scale is clamped to
   0.01–64.
 - Rendering order: checkerboard, then the reference if below, then artwork,
-  then the reference if above, then floating pixels off the document, then
+  then the reference if above, then depth labels, then the side view's
+  column band, then floating pixels off the document, then
   the selection (or float) outline, then a lasso being drawn, then the
   brush outline. The reference is clipped
   to the document rect and drawn with `globalAlpha` and its own smoothing
@@ -377,8 +415,17 @@ storage without updating this section and the palette-swap design.
     pixels, the palette, or layer order, visibility or opacity, and when in
     doubt: a missed `'view'` only costs time, a wrong one shows stale pixels.
   - Direct `renderer.render()` calls (automation) always recomposite.
+  - Every `'content'` request bumps `Editor.contentVersion` (unlike
+    `revision`, also mid-stroke and for previews). Views caching what they
+    draw key on it.
+  - `Editor.onRender(listener)` runs after each canvas render with whether
+    content changed. The side and 3D panes redraw from there, so they follow
+    the canvas without their own subscriptions to every change.
 - `render(doc, viewport, overlays)` takes what isn't document data as
-  `RenderOverlays`: the reference image and the brush cursor.
+  `RenderOverlays`: the reference image, the brush cursor, the lasso, the
+  side view's column (`slice`) and the layer to label with depths
+  (`depthLabels`). Labels are drawn into a cached canvas, redrawn only
+  when the content, layer or view changes: text is slow.
 
 ### Tools and input
 
@@ -520,9 +567,9 @@ storage without updating this section and the palette-swap design.
   - The float's pixels are always stamped into its layer at `rect`. So
     export, save, the eyedropper, thumbnails, palette tools and color usage
     all just see layer pixels.
-  - The float record adds what stamping loses: the lifted `pixels` (including
-    any off the document) and `under`, the layer value beneath each stamped
-    pixel.
+  - The float record adds what stamping loses: the lifted `pixels` and
+    their `extrusion` (including any off the document) and `under`, the
+    layer cell (index and extrusion) beneath each stamped pixel.
   - Lifting and dropping therefore change no pixels. Moving (`moveFloating`)
     puts `under` back, then stamps at the new place, recording the new
     `under`. Transparent float pixels cover nothing.
@@ -543,9 +590,9 @@ storage without updating this section and the palette-swap design.
   - Selection tools drop the float at gesture start (`previewFloating(null)`)
     so the new selection shows, and record the drop with the selection.
   - With no selection, Move moves the whole layer without floating: on each
-    pointer move the session is reverted and the layer rewritten with
-    `shiftedPixels` (row copies into a reused buffer) through
-    `PixelEditSession.setAll`. Pixels outside the document are lost on
+    pointer move the session is reverted and the layer's pixels and
+    extrusions rewritten with `shiftedValues` (row copies into reused
+    buffers) through `PixelEditSession.setAll`. Pixels outside the document are lost on
     release (`shiftLayerEdit` for nudges; `moveLayerEdit` in
     `core/layerEdits.ts` is reordering, a different thing).
   - A float belongs to a layer (`layerId`). Moving on another layer lifts a
@@ -565,9 +612,10 @@ storage without updating this section and the palette-swap design.
 
 ### Clipboard
 
-- `core/clipboard.ts` (pure): a `PixelClip` is the copied indices, the mask
-  they came from (shape and place), and the palette colors at copy time.
-  Pasting floats the same shape.
+- `core/clipboard.ts` (pure): a `PixelClip` is the copied indices and
+  extrusions, the mask they came from (shape and place), and the palette
+  colors at copy time. Pasting floats the same shape. Images from other
+  apps have no extrusions and paste at the default.
   - `copyPixels` takes the float on the active layer (including off-canvas
     pixels), else the selection, else the whole layer. `cutEdit` removes
     the same thing.
@@ -637,8 +685,11 @@ storage without updating this section and the palette-swap design.
   `applyEdit(doc, edit, 'redo')`, which is what `Editor.perform(edit)` does
   before pushing it to history. Constructors in `core/layerEdits.ts` validate
   and return `null` for no-op changes. `perform(null)` is a no-op.
-- `PixelEdit` is a diff: changed offsets plus before/after palette indices.
-  It targets its layer by id, so it survives reordering and delete/restore.
+- `PixelEdit` is a diff: changed offsets plus before/after palette indices,
+  and before/after extrusions when any changed (`extrusion`, absent
+  otherwise). It targets its layer by id, so it survives reordering and
+  delete/restore. Diffs ignore extrusion changes on pixels that stay
+  transparent: they mean nothing there.
 - Live previews (e.g. dragging the opacity slider) mutate through
   `Editor.previewLayerOpacity`, then commit one edit on release with an
   explicit `before` value (`layerPropsEdit(doc, id, after, before)`).
@@ -670,10 +721,87 @@ storage without updating this section and the palette-swap design.
     offsets written. `revert` copies that range back, and `finish` diffs it
     against the copy, so neither costs more than the stroke's extent.
   - `setAll` writes a whole layer's worth at once. For edits built outside
-    a session, `pixelEditFromArray` diffs a whole-layer array, which is
-    much faster than `pixelEditFromValues`' map for big changes.
+    a session, `pixelEditFromArray` diffs a whole-layer array (and
+    optionally extrusions), which is much faster than
+    `pixelEditFromValues`' map for big changes.
+  - `setExtrusion` changes a painted pixel's extrusion, `setCell` a pixel's
+    index and extrusion together. `pixelEditFromCells` is the map version
+    for cells (floats and pastes use it); `pixelEditFromValues` sets indices
+    only.
 - Strokes that change nothing (or end up back at the original values) don't
   create entries. Undo/redo are ignored while a stroke is in progress.
+
+### 3D model
+
+- **Extrusions** (`core/extrusion.ts`): each layer has `extrusion: Uint16Array`
+  parallel to `pixels`, packed as `offset << 8 | depth`. A pixel's box fills
+  z from `offset` to `offset + depth` (z grows away from the viewer, into
+  the picture). Depth is 1–255, offset 0–255.
+  - Only meaningful where the pixel is painted. `setPixel` resets it to
+    `DEFAULT_EXTRUSION` (1 deep at offset 0) when painting where there was
+    no pixel, so an erased pixel's box never comes back. Writing a
+    transparent cell leaves the extrusion alone.
+  - A `Cell` is index and extrusion as one number
+    (`extrusion * 256 + index`), for code that moves whole pixels: float
+    stamping, pastes, the side view.
+- **Gaps along z** come from layers: each layer gives a pixel one box, so
+  stacking layers puts several boxes behind the same pixel, with gaps
+  between. There's no list of boxes per pixel.
+- **Model** (`core/model.ts`, pure):
+  - `buildVoxelModel` turns visible layers (opacity above 0) into sorted
+    runs per pixel. Upper layers win where boxes overlap, as in 2D; touching
+    same-color runs merge. Fully transparent palette colors are left out;
+    layer opacity isn't modeled. `pixelRuns` builds one pixel's runs (the
+    side view's column) without the rest.
+  - `buildMesh` makes quads per palette color (a `MeshPart` each). Faces
+    covered by a neighbor that's opaque or the same color are dropped, so
+    translucent colors show what's behind them but no faces inside
+    themselves. Side faces are cut into the stretches nothing covers; one
+    quad per stretch however deep. Front and back faces are one quad per
+    pixel (greedy merging is a follow-up).
+  - Mesh coordinates follow glTF: y up, front faces +z, one unit per pixel,
+    x centered on the document, y = 0 at its bottom edge, z = 0 at the
+    picture plane (boxes go toward -z). Triangles are counter-clockwise from
+    outside. `zAt(depth)` avoids -0.
+- `Editor.voxelModel` builds the model on demand and caches it per
+  `contentVersion`, so the side and 3D views share one build. Both rebuild
+  derived data through `adaptiveThrottle` (`ui/throttle.ts`): every frame
+  when fast, otherwise no sooner than 3× the last build's time, with a
+  trailing run so the last change always shows.
+- **Extrude tool and panel**: `Editor.extrude` (depth, offset) is what the
+  tool's left button paints and what Apply sets (`setExtrusionEdit`,
+  `core/extrusionEdits.ts`, on the selection or the whole layer). Writes go
+  through strokes, so they're clipped to the selection and undoable.
+- **Panes** (`ui/paneFrame.ts`): open beside the canvas in `.workspace`, set
+  by `Editor.setPaneOpen('side' | 'model', open)`. Each has a canvas, a
+  floating bar (title, controls, close), and a resize handle on its left
+  edge. They draw only while open.
+- **Side view** (`ui/sidePane.ts`, `render/sideRenderer.ts`): column
+  `Editor.sliceColumn` seen from the right (front on the left).
+  - It shares the canvas's zoom and vertical offset, so rows line up with
+    the canvas; it has its own horizontal offset. Its wheel zooms the
+    shared viewport; middle-drag pans both.
+  - Cells under the column show at full color, the rest of the model
+    (rightmost box per cell) faintly behind; the active layer's boxes in the
+    column are outlined.
+  - Painting: `extendCell` (grow the box to reach z, or a new pixel one deep)
+    with a color, `carveCell` with transparent (a box has no gaps, so it's
+    trimmed from the nearer end; the back on a tie; a one-deep box becomes
+    transparent). One stroke per drag, `plotLine` between cells.
+- **3D view** (`ui/modelPane.ts`, `render/modelRenderer.ts`,
+  `render/camera.ts`): WebGL 2, created on first open (a message replaces
+  it when unavailable). Flat shading from a fixed light, opaque parts first
+  then translucent ones blended without depth writes, a floor grid and the
+  picture plane's outline. An orbit camera (yaw, pitch, distance, target);
+  framed by `fitCamera` on first build, on a document size change, on
+  Reset view and on double-click, otherwise kept across edits. Drawn only
+  when something changes.
+- **GLB export** (`io/glb.ts`, pure): one mesh, a primitive and material per
+  palette color (named by hex; base color converted to linear, matte,
+  `BLEND` when translucent). Positions are scaled to the chosen meters per
+  pixel; POSITION has exact min/max; indices are 16-bit when they fit.
+  Empty models are refused. `fileCommands.exportModel` downloads
+  `<name>.glb`.
 
 ### Image import/export
 
@@ -720,13 +848,16 @@ storage without updating this section and the palette-swap design.
     height and the palette (hex strings).
   - Layers bottom to top: name, visible, opacity, and `pixels`, which is
     base64 of the zlib-compressed (`CompressionStream('deflate')`) palette
-    indices, row-major.
+    indices, row-major. Optionally `extrusion`, likewise for little-endian
+    16-bit extrusions, written only when a painted pixel isn't at the
+    default (transparent pixels are saved as the default).
   - An optional `reference`: the original image file (base64) with its MIME
     type, placement and settings. It's re-decoded on load.
 - Not saved: the selection, floating selection (its on-canvas pixels are in
   the layer; off-canvas ones are lost), history, view, active layer, tool or
   paint colors. Layer ids are regenerated on load.
-- `PROJECT_VERSION` is 1. When the schema changes, bump it and keep reading
+- `PROJECT_VERSION` is 2 (2 added `extrusion`; version 1 files are version
+  2 files without it). When the schema changes, bump it and keep reading
   every older version by migrating its JSON to the current shape before
   reading. A newer version than this build knows is refused with a clear
   message, never half-read.
@@ -796,6 +927,15 @@ storage without updating this section and the palette-swap design.
     stub `HTMLInputElement.prototype.click` to check that Ctrl+O opens a
     picker. Test opening projects by dropping a `File` named `*.pixgrind`
     on `.stage`.
+  - Test GLB export the same way (stub `HTMLAnchorElement.prototype.click`,
+    click Export GLB, fetch the blob URL), or call `renderModelExport`.
+    Core and `io/` modules run in plain Node 24 (type stripping), e.g. a
+    scratch script that builds a document and writes a `.glb` to inspect.
+  - The side and 3D panes only create their renderers once their
+    ResizeObserver fires, which doesn't happen while the page is hidden. To
+    check their pixels then, construct `SideRenderer`/`ModelRenderer` on a
+    detached canvas (`await import(...)`) and read it back
+    (`getImageData`, `gl.readPixels` right after `render`).
   - Test clipboard handling by dispatching
     `new ClipboardEvent('paste', { clipboardData })` with a `DataTransfer`
     holding an image `File`. For the real key path, the browser pane's

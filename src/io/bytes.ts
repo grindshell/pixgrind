@@ -21,6 +21,23 @@ export function fromBase64(text: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** 16-bit values as little-endian bytes, whatever the platform's byte order. */
+export function uint16ToBytes(values: Uint16Array): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(values.length * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < values.length; i++) view.setUint16(i * 2, values[i], true);
+  return bytes;
+}
+
+/** Reads little-endian 16-bit values. Throws on an odd number of bytes. */
+export function bytesToUint16(bytes: Uint8Array): Uint16Array {
+  if (bytes.length % 2 !== 0) throw new RangeError('Expected an even number of bytes');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const values = new Uint16Array(bytes.length / 2);
+  for (let i = 0; i < values.length; i++) values[i] = view.getUint16(i * 2, true);
+  return values;
+}
+
 /** Compresses with zlib ("deflate"). */
 export async function deflate(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));

@@ -1,23 +1,29 @@
 import { parseHex, toHex } from '../core/color.ts';
+import { DEFAULT_EXTRUSION, isExtrusion } from '../core/extrusion.ts';
 import { createLayer, type Layer } from '../core/layer.ts';
 import { createPalette, MAX_PALETTE_COLORS, TRANSPARENT } from '../core/palette.ts';
 import { createDocument, type PixelDocument } from '../core/pixelDocument.ts';
 import { clampReferenceScale, type ReferencePlacement } from '../core/referencePlacement.ts';
-import { deflate, fromBase64, inflate, toBase64 } from './bytes.ts';
+import { bytesToUint16, deflate, fromBase64, inflate, toBase64, uint16ToBytes } from './bytes.ts';
 
 /*
  * Project files (`.pixgrind`): JSON holding everything needed to continue
  * editing: name, size, palette, layers and, optionally, the reference image.
- * Layer pixels are palette indices, zlib-compressed then base64-encoded. The
- * reference is its original image file, base64-encoded. Selection, history
- * and the view aren't saved.
+ * Layer pixels are palette indices, zlib-compressed then base64-encoded, and
+ * so are their extrusions for the 3D model. The reference is its original
+ * image file, base64-encoded. Selection, history and the view aren't saved.
  *
  * Bump PROJECT_VERSION whenever the schema changes, and keep reading every
  * older version: migrate older JSON to the current shape before reading it.
+ *
+ * Versions:
+ * 1. The first.
+ * 2. Layers may have `extrusion`. Version 1 files are version 2 files
+ *    without it, so they need no migration.
  */
 
 export const PROJECT_EXTENSION = 'pixgrind';
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;
 const FORMAT = 'pixgrind';
 
 /** A reference image as saved in a project: the original file plus its placement and settings. */
@@ -36,17 +42,22 @@ export interface Project {
   reference: ProjectReference | null;
 }
 
-/** The file's JSON, version 1. */
-interface ProjectFileV1 {
+/** The file's JSON, version 2. */
+interface ProjectFileV2 {
   format: typeof FORMAT;
-  version: 1;
+  version: 2;
   name: string;
   width: number;
   height: number;
   /** Colors as `#rrggbb` / `#rrggbbaa`; the first is pixel index 1. */
   palette: { name: string; colors: string[] };
-  /** Bottom to top. `pixels`: base64 of the zlib-compressed indices, row-major. */
-  layers: Array<{ name: string; visible: boolean; opacity: number; pixels: string }>;
+  /**
+   * Bottom to top. `pixels`: base64 of the zlib-compressed indices,
+   * row-major. `extrusion`: likewise for the extrusions, as little-endian
+   * 16-bit `offset << 8 | depth` (transparent pixels' are the default);
+   * absent when every painted pixel has the default extrusion.
+   */
+  layers: Array<{ name: string; visible: boolean; opacity: number; pixels: string; extrusion?: string }>;
   reference?: {
     name: string;
     /** MIME type of the image file. */
@@ -70,8 +81,14 @@ export function isProjectFile(file: { name: string }): boolean {
 /** Serializes a document, and optionally a reference image, as project file text. */
 export async function serializeProject(doc: PixelDocument, reference: ProjectReference | null = null): Promise<string> {
   // Copy everything before the first await, so edits made while compressing can't leak into the file.
-  const layers = doc.layers.map(({ name, visible, opacity, pixels }) => ({ name, visible, opacity, pixels: pixels.slice() }));
-  const header: Omit<ProjectFileV1, 'layers' | 'reference'> = {
+  const layers = doc.layers.map(({ name, visible, opacity, pixels, extrusion }) => ({
+    name,
+    visible,
+    opacity,
+    pixels: pixels.slice(),
+    extrusion: savedExtrusion(pixels, extrusion),
+  }));
+  const header: Omit<ProjectFileV2, 'layers' | 'reference'> = {
     format: FORMAT,
     version: PROJECT_VERSION,
     name: doc.name,
@@ -81,9 +98,15 @@ export async function serializeProject(doc: PixelDocument, reference: ProjectRef
   };
   const ref = reference && { ...reference };
 
-  const file: ProjectFileV1 = {
+  const file: ProjectFileV2 = {
     ...header,
-    layers: await Promise.all(layers.map(async ({ pixels, ...props }) => ({ ...props, pixels: toBase64(await deflate(pixels)) }))),
+    layers: await Promise.all(
+      layers.map(async ({ pixels, extrusion, ...props }) => ({
+        ...props,
+        pixels: toBase64(await deflate(pixels)),
+        ...(extrusion && { extrusion: toBase64(await deflate(uint16ToBytes(extrusion))) }),
+      })),
+    ),
   };
   if (ref) {
     const { name, source, x, y, scale, opacity, visible, above, smooth } = ref;
@@ -91,6 +114,21 @@ export async function serializeProject(doc: PixelDocument, reference: ProjectRef
     file.reference = { name, type: source.type, data, x, y, scale, opacity, visible, above, smooth };
   }
   return JSON.stringify(file, null, 2) + '\n';
+}
+
+/**
+ * The extrusions to save: a copy with transparent pixels' set to the default
+ * (they mean nothing, and this compresses better), or null when every pixel
+ * has the default.
+ */
+function savedExtrusion(pixels: Uint8Array, extrusion: Uint16Array): Uint16Array | null {
+  const saved = extrusion.slice();
+  let custom = false;
+  for (let i = 0; i < saved.length; i++) {
+    if (pixels[i] === TRANSPARENT) saved[i] = DEFAULT_EXTRUSION;
+    else if (saved[i] !== DEFAULT_EXTRUSION) custom = true;
+  }
+  return custom ? saved : null;
 }
 
 /** Reads project file text. Throws a user-readable error for anything that isn't a valid project. */
@@ -109,12 +147,13 @@ export async function parseProject(text: string): Promise<Project> {
       `This project was saved by a newer version of Pixgrind (file format ${version}; this version reads up to ${PROJECT_VERSION})`,
     );
   }
-  return readV1(json);
+  // Version 1 is version 2 without extrusions, which are optional.
+  return readV2(json);
 }
 
 type Json = Record<string, unknown>;
 
-async function readV1(file: Json): Promise<Project> {
+async function readV2(file: Json): Promise<Project> {
   const name = text(file, 'name', 'name');
   const width = num(file, 'width', 'width');
   const height = num(file, 'height', 'height');
@@ -176,7 +215,26 @@ async function readLayer(
   for (let i = 0; i < layer.pixels.length; i++) {
     if (layer.pixels[i] > colorCount) layer.pixels[i] = TRANSPARENT;
   }
+  if (json.extrusion !== undefined) await readExtrusion(layer, text(json, 'extrusion', `${where} extrusion`), where);
   return layer;
+}
+
+/** Reads a layer's saved extrusions into it (after its pixels). */
+async function readExtrusion(layer: Layer, encoded: string, where: string): Promise<void> {
+  let extrusion: Uint16Array;
+  try {
+    extrusion = bytesToUint16(await inflate(fromBase64(encoded), layer.pixels.length * 2));
+  } catch {
+    throw invalid(`${where} extrusion data is corrupted`);
+  }
+  if (extrusion.length !== layer.pixels.length) {
+    throw invalid(`${where} has ${extrusion.length} extrusions for ${layer.pixels.length} pixels`);
+  }
+  for (let i = 0; i < extrusion.length; i++) {
+    if (layer.pixels[i] === TRANSPARENT) continue;
+    if (!isExtrusion(extrusion[i])) throw invalid(`${where} has a pixel extruded 0 deep`);
+    layer.extrusion[i] = extrusion[i];
+  }
 }
 
 function readReference(value: unknown): ProjectReference | null {

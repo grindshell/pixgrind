@@ -64,6 +64,43 @@ export function slider(
   return { row: fieldRow(caption, input, value), input, set };
 }
 
+/**
+ * A labeled whole-number input. `onChange` gets the value clamped to
+ * [min, max] when it's committed (Enter, leaving the field, or the arrows).
+ * `set` leaves the field alone while it has focus.
+ */
+export function numberField(
+  text: string,
+  min: number,
+  max: number,
+  onChange: (value: number) => void,
+): { label: HTMLLabelElement; input: HTMLInputElement; set: (value: number) => void } {
+  const label = el('label', 'number-field');
+  const caption = el('span', 'field-label');
+  caption.textContent = text;
+  const input = el('input', 'text-input number-input');
+  input.type = 'number';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = '1';
+  label.append(caption, input);
+  let current = min;
+  const set = (value: number) => {
+    current = value;
+    if (document.activeElement !== input) input.value = String(value);
+  };
+  input.addEventListener('change', () => {
+    const value = Number(input.value);
+    const clamped = input.value.trim() !== '' && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : current;
+    input.value = String(clamped);
+    onChange(clamped);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') input.blur();
+  });
+  return { label, input, set };
+}
+
 export function option(value: string, label: string): HTMLOptionElement {
   const opt = el('option');
   opt.value = value;
@@ -84,6 +121,22 @@ export function isTextEntry(target: EventTarget | null): boolean {
 /** Whether a focused control uses the arrow keys itself (sliders, radio buttons). */
 export function usesArrowKeys(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement && (target.type === 'range' || target.type === 'radio');
+}
+
+/**
+ * Calls `onChange` whenever `devicePixelRatio` changes, e.g. when the window
+ * moves to a monitor with different scaling. ResizeObserver misses this case
+ * because the element's CSS size stays the same.
+ */
+export function watchDevicePixelRatio(onChange: () => void): void {
+  matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
+    'change',
+    () => {
+      onChange();
+      watchDevicePixelRatio(onChange);
+    },
+    { once: true },
+  );
 }
 
 export function setButtonLabel(button: HTMLButtonElement, label: string): void {

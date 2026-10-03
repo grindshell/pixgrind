@@ -1,3 +1,4 @@
+import { cellExtrusion, cellIndex, DEFAULT_EXTRUSION, packCell, type Cell } from './extrusion.ts';
 import { createLayer, type Layer } from './layer.ts';
 import type { Mask } from './mask.ts';
 import { clonePalette, TRANSPARENT, type Palette } from './palette.ts';
@@ -42,12 +43,15 @@ export interface FloatingPixels extends Mask {
    * which include every pixel outside the mask, don't cover anything.
    */
   pixels: Uint8Array;
+  /** The lifted pixels' extrusions, parallel to `pixels`. */
+  extrusion: Uint16Array;
   /**
-   * The layer's value under each non-transparent pixel inside the document,
-   * parallel to `pixels` (other entries are unused). Right after lifting
-   * this is transparent: the hole the pixels leave.
+   * The layer's cell (index and extrusion, see `Cell`) under each
+   * non-transparent pixel inside the document, parallel to `pixels` (other
+   * entries are unused). Right after lifting this is transparent: the hole
+   * the pixels leave.
    */
-  under: Uint8Array;
+  under: Uint32Array;
 }
 
 /** Throws a RangeError unless a document can be `width`×`height`. */
@@ -98,11 +102,34 @@ export function getPixel(doc: PixelDocument, layer: Layer, x: number, y: number)
   return inBounds(doc, x, y) ? layer.pixels[y * doc.width + x] : TRANSPARENT;
 }
 
-/** Sets (x, y) to a palette index. Out-of-bounds writes are ignored. Returns whether the pixel changed. */
+/**
+ * Sets (x, y) to a palette index. Out-of-bounds writes are ignored. Returns
+ * whether the pixel changed. A pixel painted where there was none gets the
+ * default extrusion, not whatever an erased pixel left there.
+ */
 export function setPixel(doc: PixelDocument, layer: Layer, x: number, y: number, index: number): boolean {
   if (!inBounds(doc, x, y)) return false;
   const i = y * doc.width + x;
   if (layer.pixels[i] === index) return false;
+  if (layer.pixels[i] === TRANSPARENT) layer.extrusion[i] = DEFAULT_EXTRUSION;
   layer.pixels[i] = index;
+  return true;
+}
+
+/** The pixel's index and extrusion at `offset` (`y * width + x`) as one cell. */
+export function cellAt(layer: Layer, offset: number): Cell {
+  return packCell(layer.pixels[offset], layer.extrusion[offset]);
+}
+
+/**
+ * Sets the pixel at `offset` to a cell: its index, and its extrusion unless
+ * the cell is transparent. Returns whether anything changed.
+ */
+export function setCellAt(layer: Layer, offset: number, cell: Cell): boolean {
+  const index = cellIndex(cell);
+  const extrusion = index === TRANSPARENT ? layer.extrusion[offset] : cellExtrusion(cell);
+  if (layer.pixels[offset] === index && layer.extrusion[offset] === extrusion) return false;
+  layer.pixels[offset] = index;
+  layer.extrusion[offset] = extrusion;
   return true;
 }

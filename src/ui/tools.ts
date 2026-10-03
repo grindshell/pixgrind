@@ -1,6 +1,7 @@
 import { brushLine, brushMask, brushRect, type BrushMask } from '../core/brush.ts';
 import { visibleIndexAt } from '../core/composite.ts';
 import { combineEdits, type PixelEditSession } from '../core/edits.ts';
+import { DEFAULT_EXTRUSION, packExtrusion, type Cell } from '../core/extrusion.ts';
 import { colorRegion, floodRegion } from '../core/floodFill.ts';
 import {
   clipMask,
@@ -17,7 +18,7 @@ import { documentRect } from '../core/pixelDocument.ts';
 import { plotLine, snapLineEnd, squareEnd, type Point } from '../core/raster.ts';
 import { rectFromCorners, rectsEqual } from '../core/rect.ts';
 import { scaleAround } from '../core/referencePlacement.ts';
-import { floatingChange, liftSelection, moveFloating, selectionChange, shiftedPixels } from '../core/selection.ts';
+import { floatingChange, liftSelection, moveFloating, selectionChange, shiftedValues } from '../core/selection.ts';
 import type { ColorSlot, Editor } from './editor.ts';
 import type { IconName } from './icons.ts';
 
@@ -34,6 +35,7 @@ export type ToolId =
   | 'rect-filled'
   | 'fill'
   | 'eyedropper'
+  | 'extrude'
   | 'reference';
 
 /** Pointer position in document pixels, plus modifiers tools care about. */
@@ -213,6 +215,39 @@ const fill: Tool = {
     }
     editor.requestRender();
     return { move() {}, end: () => editor.endStroke() };
+  },
+};
+
+/**
+ * Extrude: paints depth instead of color. The left button gives painted
+ * pixels of the active layer the 3D panel's depth and offset; the right
+ * button puts them back to the default (one deep, at the front). Pressing
+ * also shows the pressed column in the side view.
+ */
+const extrude: Tool = {
+  id: 'extrude',
+  label: 'Extrude',
+  icon: 'extrude',
+  shortcut: 'd',
+  paints: true,
+  brush: true,
+  begin(editor, start, _index, slot) {
+    const { offset, depth } = editor.extrude;
+    const extrusion = slot === 'primary' ? packExtrusion(offset, depth) : DEFAULT_EXTRUSION;
+    if (start.x >= 0 && start.x < editor.doc.width) editor.setSliceColumn(start.x);
+    const session = editor.beginStroke(slot === 'primary' ? 'Extrude' : 'Reset extrusion');
+    const mask = brushMask(editor.brush);
+    let last: Point = start;
+    const paintTo = (to: Point) => {
+      let changed = false;
+      brushLine(mask, last.x, last.y, to.x, to.y, (x, y) => {
+        changed = session.setExtrusion(x, y, extrusion) || changed;
+      });
+      last = to;
+      if (changed) editor.requestRender();
+    };
+    paintTo(start);
+    return { move: paintTo, end: () => editor.endStroke() };
   },
 };
 
@@ -497,11 +532,11 @@ const move: Tool = {
     const origin = startFloating?.layerId === layer.id ? startFloating : liftSelection(doc, layer);
     // Not clipped: moved pixels may land outside the original selection.
     const session = editor.beginStroke('Move', { clipToSelection: false });
-    const write = (values: Map<number, number>) => {
-      for (const [offset, value] of values) session.setPixel(offset % doc.width, Math.floor(offset / doc.width), value);
+    const write = (cells: Map<number, Cell>) => {
+      for (const [offset, cell] of cells) session.setCell(offset % doc.width, Math.floor(offset / doc.width), cell);
     };
-    /** Whole-layer moves rewrite the layer on every pointer move; this saves allocating each time. */
-    let shifted: Uint8Array | undefined;
+    /** Whole-layer moves rewrite the layer on every pointer move; these save allocating each time. */
+    let shifted: { pixels: Uint8Array; extrusion: Uint16Array } | undefined;
 
     return {
       move(input) {
@@ -514,13 +549,16 @@ const move: Tool = {
         // Recompute from the state at the start of the drag each time.
         session.revert();
         if (origin) {
-          const { values, moved } = moveFloating(doc, layer, origin, dx, dy);
-          write(values);
+          const { cells, moved } = moveFloating(doc, layer, origin, dx, dy);
+          write(cells);
           editor.previewFloating(moved);
           editor.previewSelection(clipMask(moved, doc.width, doc.height));
         } else {
-          shifted ??= new Uint8Array(layer.pixels.length);
-          session.setAll(shiftedPixels(doc, layer.pixels, dx, dy, shifted));
+          shifted ??= { pixels: new Uint8Array(layer.pixels.length), extrusion: new Uint16Array(layer.pixels.length) };
+          session.setAll(
+            shiftedValues(doc, layer.pixels, dx, dy, shifted.pixels),
+            shiftedValues(doc, layer.extrusion, dx, dy, shifted.extrusion),
+          );
         }
         editor.requestRender();
       },
@@ -596,6 +634,7 @@ export const TOOLS: readonly Tool[] = [
   rectangle(true),
   fill,
   eyedropper,
+  extrude,
   reference,
 ];
 

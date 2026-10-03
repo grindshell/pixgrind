@@ -11,6 +11,7 @@ import {
   type PixelClip,
 } from './clipboard.ts';
 import { applyEdit, type Edit } from './edits.ts';
+import { DEFAULT_EXTRUSION, packExtrusion } from './extrusion.ts';
 import { History } from './history.ts';
 import { rectMask } from './mask.ts';
 import { createPalette } from './palette.ts';
@@ -65,6 +66,20 @@ describe('copyPixels', () => {
     expect(rows(doc)).toEqual(['12', '31']);
     expect(doc.floating?.bits).toBe(clip.bits);
     expect(doc.selection).toEqual({ rect: { x: 0, y: 0, width: 2, height: 2 }, bits: clip.bits });
+  });
+
+  it('carries extrusions, and pastes images from elsewhere at the default', () => {
+    const doc = docFrom(['10']);
+    const deep = packExtrusion(1, 5);
+    doc.layers[0].extrusion[0] = deep;
+    const clip = copyPixels(doc, doc.layers[0]);
+    const other = docFrom(['00']);
+    applyEdit(other, pasteEdit(other, other.layers[0], clip)!, 'redo');
+    expect(other.layers[0].extrusion[0]).toBe(deep);
+
+    const image = docFrom(['00']);
+    applyEdit(image, pasteEdit(image, image.layers[0], { ...clip, extrusion: undefined })!, 'redo');
+    expect([image.layers[0].pixels[0], image.layers[0].extrusion[0]]).toEqual([1, DEFAULT_EXTRUSION]);
   });
 
   it('copies a float whole, including pixels off the document', () => {
