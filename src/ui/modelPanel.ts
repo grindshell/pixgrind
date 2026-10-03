@@ -127,8 +127,17 @@ export function createModelPanel(editor: Editor): HTMLElement {
   scale.setAttribute('aria-label', 'Size of one pixel in the exported model');
   scale.title = 'Size of one pixel in the exported model';
   for (const { value, label } of SCALES) scale.append(option(String(value), label));
+  const watertight = checkbox('Watertight', () => {});
+  watertight.input.checked = true;
+  watertight.label.title =
+    'Each color a closed, manifold solid with shared vertices, for 3D printing and modeling tools ' +
+    '(adds hidden faces where colors touch, and leaves out normals: viewers shade it flat). ' +
+    'Off: the fewest faces, as the 3D view shows, for game engines.';
+  const exportOptions = el('div', 'checkbox-row');
+  exportOptions.append(watertight.label);
+
   const exportButton = textButton('Export GLB', () => {
-    void exportModel(editor, { scale: Number(scale.value) }).then(
+    void exportModel(editor, { scale: Number(scale.value), watertight: watertight.input.checked }).then(
       (message) => (status.textContent = message),
       (error: unknown) => (status.textContent = error instanceof Error ? error.message : String(error)),
     );
@@ -163,6 +172,7 @@ export function createModelPanel(editor: Editor): HTMLElement {
     fieldRow(applyShapeButton),
     options,
     fieldRow(scale, exportButton),
+    exportOptions,
     note,
     status,
   );

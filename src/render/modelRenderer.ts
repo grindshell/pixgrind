@@ -4,28 +4,35 @@ import { FIELD_OF_VIEW, multiply, perspectiveMatrix, viewMatrix, type OrbitCamer
 
 const VERTEX_SHADER = `#version 300 es
 in vec3 position;
-in vec3 normal;
 uniform mat4 viewProjection;
-out vec3 vNormal;
+out vec3 vPosition;
 void main() {
-  vNormal = normal;
+  vPosition = position;
   gl_Position = viewProjection * vec4(position, 1.0);
 }`;
 
 /**
  * Flat shading from a fixed light at the upper right front, so each side of
  * a box gets its own shade and the front stays close to the palette color.
- * Lines (the floor grid) pass `lit = 0` and take the color as is.
+ * The normal comes from how the position changes across the screen, so it's
+ * each triangle's own whether or not vertices are shared (back faces are
+ * culled, so it always points toward the viewer, out of the model). Lines
+ * (the floor grid) pass `lit = 0` and take the color as is.
  */
 const FRAGMENT_SHADER = `#version 300 es
-precision mediump float;
-in vec3 vNormal;
+precision highp float;
+in vec3 vPosition;
 uniform vec4 color;
 uniform float lit;
 out vec4 outColor;
 const vec3 light = normalize(vec3(0.35, 0.6, 1.0));
 void main() {
-  float shade = mix(1.0, 0.62 + 0.4 * max(dot(normalize(vNormal), light), 0.0), lit);
+  float shade = 1.0;
+  // Lines have no normal: a cross product of two parallel steps is zero.
+  if (lit > 0.5) {
+    vec3 normal = normalize(cross(dFdx(vPosition), dFdy(vPosition)));
+    shade = 0.62 + 0.4 * max(dot(normal, light), 0.0);
+  }
   outColor = vec4(color.rgb * shade, color.a);
 }`;
 
@@ -66,7 +73,6 @@ export class ModelRenderer {
   private readonly program: WebGLProgram;
   private readonly locations: {
     position: number;
-    normal: number;
     viewProjection: WebGLUniformLocation | null;
     color: WebGLUniformLocation | null;
     lit: WebGLUniformLocation | null;
@@ -85,7 +91,6 @@ export class ModelRenderer {
     this.program = createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     this.locations = {
       position: gl.getAttribLocation(this.program, 'position'),
-      normal: gl.getAttribLocation(this.program, 'normal'),
       viewProjection: gl.getUniformLocation(this.program, 'viewProjection'),
       color: gl.getUniformLocation(this.program, 'color'),
       lit: gl.getUniformLocation(this.program, 'lit'),
@@ -111,10 +116,8 @@ export class ModelRenderer {
     this.parts = mesh.parts.map((part) => {
       const vao = gl.createVertexArray();
       gl.bindVertexArray(vao);
-      const buffers = [
-        this.attribute(this.locations.position, part.positions),
-        this.attribute(this.locations.normal, part.normals),
-      ];
+      // Normals aren't needed: the shader works them out per triangle.
+      const buffers = [this.attribute(this.locations.position, part.positions)];
       const indices = gl.createBuffer();
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, part.indices, gl.STATIC_DRAW);
@@ -223,9 +226,6 @@ export class ModelRenderer {
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     const buffer = this.attribute(this.locations.position, new Float32Array(points));
-    // Lines are unlit; a constant normal keeps the attribute defined.
-    gl.disableVertexAttribArray(this.locations.normal);
-    gl.vertexAttrib3f(this.locations.normal, 0, 1, 0);
     gl.bindVertexArray(null);
     return { vao, buffer, count: points.length / 3 };
   }

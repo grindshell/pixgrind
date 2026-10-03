@@ -58,12 +58,15 @@ export function meshToGlb(mesh: ModelMesh, { name, scale }: GlbOptions): Uint8Ar
       min,
       max,
     });
-    const normal = accessor({
-      bufferView: view(bytesOf(part.normals), ARRAY_BUFFER),
-      componentType: FLOAT,
-      count,
-      type: 'VEC3',
-    });
+    // Without normals (shared vertices), glTF viewers must shade flat.
+    const normal =
+      part.normals &&
+      accessor({
+        bufferView: view(bytesOf(part.normals), ARRAY_BUFFER),
+        componentType: FLOAT,
+        count,
+        type: 'VEC3',
+      });
     const small = count <= 0xffff;
     const indices = accessor({
       bufferView: view(bytesOf(small ? Uint16Array.from(part.indices) : part.indices), ELEMENT_ARRAY_BUFFER),
@@ -71,7 +74,8 @@ export function meshToGlb(mesh: ModelMesh, { name, scale }: GlbOptions): Uint8Ar
       count: part.indices.length,
       type: 'SCALAR',
     });
-    return { attributes: { POSITION: position, NORMAL: normal }, indices, material };
+    const attributes = normal === null ? { POSITION: position } : { POSITION: position, NORMAL: normal };
+    return { attributes, indices, material };
   });
 
   const json = {

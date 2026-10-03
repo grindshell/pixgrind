@@ -121,7 +121,8 @@ Built so far:
     offset with Apply depth (to the selection or layer), the Diagonal
     tool's shape (Auto, a corner, or square) with Apply shape, depth labels
     and diagonal cuts on the canvas (labels at zoom 12× or more), and GLB
-    export at a chosen size per pixel.
+    export at a chosen size per pixel: watertight by default (each color a
+    closed, manifold solid), or lean (fewest faces).
   - Extrude tool (D): paints the panel's depth and offset onto painted
     pixels with the brush; right-click resets them. Shapes stay. Pressing
     also picks the side view's column.
@@ -143,10 +144,13 @@ Built so far:
 
 Follow-ups:
 - 3D model:
-  - More mesh optimization: share vertices between quads of a part that
-    meet at corners (today each quad has its own four), and fewer
-    rectangles where rows don't repeat exactly (e.g. a minimum rectangle
-    partition per plane).
+  - More mesh optimization: fewer rectangles where rows don't repeat
+    exactly (e.g. a minimum rectangle partition per plane), and sharing
+    vertices in lean exports too (only between faces facing the same way,
+    since they keep normals).
+  - Watertight export runs on the main thread: seconds for large noisy
+    documents (a 256² noise test takes ~2 s). A worker would keep the UI
+    responsive.
   - More diagonal slopes: 2:1 and 1:2 (common in pixel art, isometric
     especially). They cut across pixel pairs, which quarters can't
     describe, so they need finer pixel shapes and partial side faces.
@@ -238,7 +242,8 @@ src/
                  combining, outlines), floodFill (+ colorRegion), image (RGBA
                  ↔ indices, upscale, flatten), extrusion (packed extrusions
                  and shapes, cells, side view cell edits, autoShape), model
-                 (voxel runs by quarter, mesh),
+                 (voxel runs by quarter, mesh), meshWeld (manifold
+                 welding for watertight export),
                  edits (undoable changes), layerEdits / selection /
                  paletteEdits / documentEdits / extrusionEdits (edit
                  constructors), history
@@ -811,6 +816,24 @@ storage without updating this section and the palette-swap design.
     documents with diagonals: every exposed piece covered exactly once,
     hidden ones not at all, and no extra area. Keep it when changing the
     mesh.
+  - **Watertight** (`buildMesh(…, { watertight: true })`, for export): only
+    the same color hides a face, so every color is a closed shell (where two
+    colors touch, both have a face, back to back inside the model). Each
+    part is then welded by `weldPolygons` (`core/meshWeld.ts`): corners at
+    one place share a vertex; a vertex lying along another face's edge is
+    added to it (no T-junctions); faces are fanned into triangles from a
+    corner whose edges weren't split, else from a new middle vertex (no flat
+    triangles); and where a shell touches itself along an edge or at a
+    point, each sheet gets its own vertices (triangles around such an edge
+    are paired by angle, solid wedge by solid wedge, via union-find over
+    triangle corners). Result: each part a closed 2-manifold with shared
+    vertices and `normals: null`.
+  - Why a shell per color: glTF needs a primitive per material, and
+    Blender's glTF import keeps each primitive's vertices separate unless
+    "Merge Vertices" is ticked (which in turn would fuse sheets that only
+    touch). Shells per color are manifold with the default import. Tests
+    check manifoldness (each edge once each way, one fan per vertex) and each
+    color's enclosed volume on random documents.
   - Mesh coordinates follow glTF: y up, front faces +z, one unit per pixel,
     x centered on the document, y = 0 at its bottom edge, z = 0 at the
     picture plane (boxes go toward -z). Triangles are counter-clockwise from
@@ -847,7 +870,10 @@ storage without updating this section and the palette-swap design.
     transparent). One stroke per drag, `plotLine` between cells.
 - **3D view** (`ui/modelPane.ts`, `render/modelRenderer.ts`,
   `render/camera.ts`): WebGL 2, created on first open (a message replaces
-  it when unavailable). Flat shading from a fixed light, opaque parts first
+  it when unavailable). Flat shading from a fixed light, with each
+  triangle's normal worked out in the fragment shader from screen-space
+  derivatives of the position (so normals aren't uploaded and shared
+  vertices would shade flat too), opaque parts first
   then translucent ones blended without depth writes, a floor grid and the
   picture plane's outline. An orbit camera (yaw, pitch, distance, target);
   framed by `fitCamera` on first build, on a document size change, on
@@ -857,6 +883,11 @@ storage without updating this section and the palette-swap design.
   palette color (named by hex; base color converted to linear, matte,
   `BLEND` when translucent). Positions are scaled to the chosen meters per
   pixel; POSITION has exact min/max; indices are 16-bit when they fit.
+  NORMAL is written only when the mesh has normals: watertight exports
+  (the panel's Watertight checkbox, on by default) share vertices between
+  faces facing different ways, so they leave normals out, and glTF viewers
+  must then shade flat. The lean export (checkbox off) is the 3D view's
+  mesh, with per-face vertices and normals.
   Empty models are refused. `fileCommands.exportModel` downloads
   `<name>.glb`.
 
@@ -990,6 +1021,14 @@ storage without updating this section and the palette-swap design.
     click Export GLB, fetch the blob URL), or call `renderModelExport`.
     Core and `io/` modules run in plain Node 24 (type stripping), e.g. a
     scratch script that builds a document and writes a `.glb` to inspect.
+  - Blender (through its MCP tools, when the user has it open) checks GLBs
+    for real: import with `bpy.ops.import_scene.gltf` (default settings,
+    as users would), then count non-manifold edges and vertices with
+    `bmesh` and compare each material's signed volume with the colors'
+    volumes. Import into a collection of its own, away from the user's
+    objects. The startup splash hides the viewport from screenshots; render
+    with `bpy.ops.render.opengl(view_context=True)` and save the Render
+    Result instead.
   - The side and 3D panes only create their renderers once their
     ResizeObserver fires, which doesn't happen while the page is hidden. To
     check their pixels then, construct `SideRenderer`/`ModelRenderer` on a

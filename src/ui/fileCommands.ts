@@ -127,11 +127,13 @@ export async function exportImage(editor: Editor, options: ExportOptions): Promi
 export interface ModelExportOptions {
   /** Meters per pixel. */
   scale: number;
+  /** A closed, manifold shell per color (see `MeshOptions`), rather than the fewest faces. */
+  watertight: boolean;
 }
 
 /** The 3D model of the visible layers as a GLB file, and how many faces it has. Throws for an empty model. */
-export function renderModelExport(doc: PixelDocument, { scale }: ModelExportOptions): { blob: Blob; faces: number } {
-  const mesh = buildMesh(buildVoxelModel(doc), doc.palette);
+export function renderModelExport(doc: PixelDocument, { scale, watertight }: ModelExportOptions): { blob: Blob; faces: number } {
+  const mesh = buildMesh(buildVoxelModel(doc), doc.palette, { watertight });
   const blob = new Blob([meshToGlb(mesh, { name: doc.name, scale })], { type: 'model/gltf-binary' });
   return { blob, faces: mesh.faces };
 }

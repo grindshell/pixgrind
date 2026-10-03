@@ -70,7 +70,7 @@ function faces(part: MeshPart): Face[] {
     const quad = indices[i + 3] === v && indices[i + 4] === v + 2 && indices[i + 5] === v + 3;
     const corners = (quad ? [v, v + 1, v + 2, v + 3] : [v, v + 1, v + 2]).map(at);
     result.push({
-      normal: Array.from(normals.slice(v * 3, v * 3 + 3)),
+      normal: Array.from(normals!.slice(v * 3, v * 3 + 3)),
       corners,
       min: [0, 1, 2].map((axis) => Math.min(...corners.map((c) => c[axis]))),
       max: [0, 1, 2].map((axis) => Math.max(...corners.map((c) => c[axis]))),
@@ -124,14 +124,18 @@ interface Slot {
   corners: Vec3[];
 }
 
-/** Every slot of every filled quarter of every voxel, worked out voxel by voxel, in mesh coordinates. */
-function slots(doc: PixelDocument): Slot[] {
+/**
+ * Every slot of every filled quarter of every voxel, worked out voxel by
+ * voxel, in mesh coordinates. Watertight, only the same color hides a face.
+ */
+function slots(doc: PixelDocument, watertight: boolean): Slot[] {
   const { width, height, depth, columns } = buildVoxelModel(doc);
   const color = (x: number, y: number, z: number, q: number) => {
     const found = x >= 0 && y >= 0 && x < width && y < height ? runAt(columns[y * width + x], z) : undefined;
     return found ? quarterIndex(found.quarters, q as Quarter) : 0;
   };
-  const hides = (cover: number, face: number) => cover !== 0 && (alpha(colorForIndex(doc.palette, cover)) === 255 || cover === face);
+  const hides = (cover: number, face: number) =>
+    cover !== 0 && (cover === face || (!watertight && alpha(colorForIndex(doc.palette, cover)) === 255));
   // Document steps to the neighbor each quarter's side faces.
   const steps = [
     [0, -1],
@@ -190,6 +194,14 @@ const sub = (p: Vec3, q: Vec3): Vec3 => [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
 const dot = (p: Vec3, q: Vec3) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
 const cross = (p: Vec3, q: Vec3): Vec3 => [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
 const normalKey = (normal: readonly number[]) => normal.map((v) => Math.round(v * 1000) / 1000 + 0).join(',');
+const unit = (p: Vec3): Vec3 => p.map((v) => v / Math.hypot(...p)) as Vec3;
+/** A part's triangles as corner positions. */
+function trianglesOf(part: MeshPart): Vec3[][] {
+  const at = (v: number): Vec3 => [part.positions[v * 3], part.positions[v * 3 + 1], part.positions[v * 3 + 2]];
+  const result: Vec3[][] = [];
+  for (let t = 0; t < part.indices.length; t += 3) result.push([part.indices[t], part.indices[t + 1], part.indices[t + 2]].map(at));
+  return result;
+}
 
 /** Area of a convex polygon. */
 function area(corners: Vec3[]): number {
@@ -221,14 +233,13 @@ function inTriangle(p: Vec3, [a, b, c]: Vec3[], normal: Vec3): boolean {
  * covered by exactly one triangle of its color facing its way, no hidden one
  * is covered, and the mesh has no more area than the exposed slots.
  */
-function expectMeshMatches(doc: PixelDocument, mesh: ModelMesh): void {
+function expectMeshMatches(doc: PixelDocument, mesh: ModelMesh, watertight = false): void {
   const triangles = new Map<string, Array<{ color: number; corners: Vec3[]; normal: Vec3 }>>();
   const meshArea = new Map<string, number>();
   for (const part of mesh.parts) {
-    const at = (v: number): Vec3 => [part.positions[v * 3], part.positions[v * 3 + 1], part.positions[v * 3 + 2]];
-    for (let t = 0; t < part.indices.length; t += 3) {
-      const corners = [part.indices[t], part.indices[t + 1], part.indices[t + 2]].map(at);
-      const normal = at(part.indices[t]).map((_, k) => part.normals[part.indices[t] * 3 + k]) as Vec3;
+    for (const corners of trianglesOf(part)) {
+      // From the winding, so meshes without normals check the same way.
+      const normal = unit(cross(sub(corners[1], corners[0]), sub(corners[2], corners[0])));
       const key = normalKey(normal);
       if (!triangles.has(key)) triangles.set(key, []);
       triangles.get(key)!.push({ color: part.index, corners, normal });
@@ -236,7 +247,7 @@ function expectMeshMatches(doc: PixelDocument, mesh: ModelMesh): void {
     }
   }
   const slotArea = new Map<string, number>();
-  for (const slot of slots(doc)) {
+  for (const slot of slots(doc, watertight)) {
     const key = normalKey(slot.normal);
     if (slot.exposed) slotArea.set(`${key} ${slot.color}`, (slotArea.get(`${key} ${slot.color}`) ?? 0) + area(slot.corners));
     // Points inside the slot, nudged off the lines mesh edges could lie on.
@@ -253,6 +264,63 @@ function expectMeshMatches(doc: PixelDocument, mesh: ModelMesh): void {
     }
   }
   for (const [key, value] of meshArea) expect(value, `area of ${key}`).toBeCloseTo(slotArea.get(key) ?? 0, 6);
+}
+
+/**
+ * Checks a part is a closed 2-manifold: each edge is used once each way (so
+ * by exactly two triangles, wound oppositely), each vertex's triangles form
+ * a single fan, and no triangle is flat.
+ */
+function expectManifold(part: MeshPart): void {
+  const { indices } = part;
+  const directed = new Set<string>();
+  // Per vertex: for each of its triangles, the next corner → the previous one.
+  const fans = new Map<number, Map<number, number>>();
+  for (let t = 0; t < indices.length; t += 3) {
+    const corners = [indices[t], indices[t + 1], indices[t + 2]];
+    for (let k = 0; k < 3; k++) {
+      const [a, b, c] = [corners[k], corners[(k + 1) % 3], corners[(k + 2) % 3]];
+      expect(directed.has(`${a},${b}`), `edge ${a}→${b} used twice`).toBe(false);
+      directed.add(`${a},${b}`);
+      if (!fans.has(a)) fans.set(a, new Map());
+      fans.get(a)!.set(b, c);
+    }
+  }
+  for (const corners of trianglesOf(part)) expect(area(corners)).toBeGreaterThan(1e-9);
+  for (const key of directed) {
+    const [a, b] = key.split(',');
+    expect(directed.has(`${b},${a}`), `edge ${key} has no twin`).toBe(true);
+  }
+  for (const [vertex, fan] of fans) {
+    // Going around the vertex, triangle by triangle, must visit them all.
+    const [start] = fan.keys();
+    let at = start;
+    let steps = 0;
+    do {
+      at = fan.get(at)!;
+      steps++;
+    } while (at !== start && steps <= fan.size);
+    expect(steps, `vertex ${vertex} has ${fan.size} triangles in more than one fan`).toBe(fan.size);
+  }
+}
+
+/** Volume enclosed by a part's triangles (positive when they face out). */
+function volumeOf(part: MeshPart): number {
+  return trianglesOf(part).reduce((sum, [a, b, c]) => sum + dot(a, cross(b, c)) / 6, 0);
+}
+
+/** Each color's volume in the model, from its runs: a quarter of a unit per quarter per depth. */
+function colorVolumes(doc: PixelDocument): Map<number, number> {
+  const volumes = new Map<number, number>();
+  for (const runs of buildVoxelModel(doc).columns) {
+    for (const { start, end, quarters } of runs ?? []) {
+      for (let q = 0; q < 4; q++) {
+        const index = quarterIndex(quarters, q as Quarter);
+        if (index) volumes.set(index, (volumes.get(index) ?? 0) + (end - start) / 4);
+      }
+    }
+  }
+  return volumes;
 }
 
 describe('buildVoxelModel', () => {
@@ -322,7 +390,7 @@ describe('buildMesh', () => {
       const at = (v: number): Vec3 => [part.positions[v * 3], part.positions[v * 3 + 1], part.positions[v * 3 + 2]];
       for (let t = 0; t < part.indices.length; t += 3) {
         const [a, b, c] = [part.indices[t], part.indices[t + 1], part.indices[t + 2]].map(at);
-        const normal = at(part.indices[t]).map((_, k) => part.normals[part.indices[t] * 3 + k]) as Vec3;
+        const normal = at(part.indices[t]).map((_, k) => part.normals![part.indices[t] * 3 + k]) as Vec3;
         expect(dot(cross(sub(b, a), sub(c, a)), normal)).toBeGreaterThan(0);
       }
     }
@@ -445,5 +513,49 @@ describe('buildMesh', () => {
   it('is empty for an empty document', () => {
     const mesh = meshOf(createDocument(3, 3, palette));
     expect(mesh).toEqual({ parts: [], faces: 0, bounds: null });
+  });
+});
+
+describe('buildMesh, watertight', () => {
+  const watertightOf = (doc: PixelDocument) => buildMesh(buildVoxelModel(doc), doc.palette, { watertight: true });
+
+  it('closes every color, so where two touch both have a face', () => {
+    const mesh = watertightOf(docFrom(['12']));
+    expect(mesh.faces).toBe(12);
+    expect(meshOf(docFrom(['12'])).faces).toBe(10);
+    for (const part of mesh.parts) {
+      expect(part.normals).toBeNull();
+      // A cube: 8 shared corners, 12 triangles.
+      expect([part.positions.length / 3, part.indices.length / 3]).toEqual([8, 12]);
+      expectManifold(part);
+      expect(volumeOf(part)).toBeCloseTo(1, 9);
+    }
+  });
+
+  it('gives boxes that touch only along an edge their own vertices', () => {
+    const [part] = watertightOf(docFrom(['10', '01'])).parts;
+    expect(part.positions.length / 3).toBe(16);
+    expectManifold(part);
+  });
+
+  it('adds vertices where merged faces meet others along their edges', () => {
+    // The front is one quad across both boxes; the back is two (different depths).
+    const [part] = watertightOf(docFrom(['11'], (x) => [0, x + 1])).parts;
+    expectManifold(part);
+    expect(volumeOf(part)).toBeCloseTo(3, 9);
+  });
+
+  it('is a closed 2-manifold per color, holding its volume, on random documents', () => {
+    const random = seeded(11);
+    for (let n = 0; n < 30; n++) {
+      const doc = randomDoc(random);
+      const mesh = watertightOf(doc);
+      const volumes = colorVolumes(doc);
+      for (const part of mesh.parts) {
+        expectManifold(part);
+        expect(volumeOf(part)).toBeCloseTo(volumes.get(part.index)!, 6);
+      }
+      expectMeshMatches(doc, mesh, true);
+    }
   });
 });

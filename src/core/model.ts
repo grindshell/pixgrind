@@ -12,6 +12,7 @@ import {
   type Shape,
 } from './extrusion.ts';
 import type { Layer } from './layer.ts';
+import { weldPolygons } from './meshWeld.ts';
 import { colorForIndex, type Palette } from './palette.ts';
 import type { PixelDocument } from './pixelDocument.ts';
 
@@ -199,10 +200,26 @@ export interface MeshPart {
   color: Rgba;
   /** x, y, z per vertex. */
   positions: Float32Array;
-  /** Unit normal per vertex, parallel to `positions`. */
-  normals: Float32Array;
+  /**
+   * Unit normal per vertex, parallel to `positions`. Null for watertight
+   * meshes, whose vertices are shared by faces facing different ways: those
+   * are shaded flat, from each triangle's winding.
+   */
+  normals: Float32Array | null;
   /** Three vertex numbers per triangle, counter-clockwise seen from outside. */
   indices: Uint32Array;
+}
+
+export interface MeshOptions {
+  /**
+   * Make each color a closed, manifold surface (see `weldPolygons`): faces
+   * are hidden only by the same color, so where two colors touch both get a
+   * face, and vertices are shared. For export to tools that need watertight
+   * solids. Otherwise faces an opaque neighbor covers are left out and every
+   * face has its own vertices, which is fewer faces and what the 3D view
+   * draws.
+   */
+  watertight?: boolean;
 }
 
 export interface ModelMesh {
@@ -231,12 +248,14 @@ export interface ModelMesh {
  * included, takes one quad however many pixels it spans. Front and back
  * faces of diagonal pixels are triangles, not merged.
  */
-export function buildMesh(model: VoxelModel, palette: Palette): ModelMesh {
+export function buildMesh(model: VoxelModel, palette: Palette, { watertight = false }: MeshOptions = {}): ModelMesh {
   const { width, height, columns } = model;
   const opaque = new Uint8Array(256);
   for (let index = 1; index < 256; index++) opaque[index] = alpha(colorForIndex(palette, index)) === 255 ? 1 : 0;
   /** Whether color `cover` (0 for none) hides a face of color `face` it touches. */
-  const hides = (cover: number, face: number) => cover !== 0 && (opaque[cover] === 1 || cover === face);
+  const hides = watertight
+    ? (cover: number, face: number) => cover === face
+    : (cover: number, face: number) => cover !== 0 && (opaque[cover] === 1 || cover === face);
   const neighbor = (x: number, y: number) => (x >= 0 && y >= 0 && x < width && y < height ? columns[y * width + x] : undefined);
 
   const builders = new Map<number, PartBuilder>();
@@ -366,7 +385,9 @@ export function buildMesh(model: VoxelModel, palette: Palette): ModelMesh {
   }
 
   const sorted = [...builders].sort(([a], [b]) => a - b);
-  const parts = sorted.map(([index, builder]) => builder.build(index, colorForIndex(palette, index)));
+  const parts = sorted.map(([index, builder]) =>
+    watertight ? builder.buildWelded(index, colorForIndex(palette, index)) : builder.build(index, colorForIndex(palette, index)),
+  );
   return { parts, faces: sorted.reduce((sum, [, builder]) => sum + builder.faces, 0), bounds: meshBounds(parts) };
 }
 
@@ -576,6 +597,8 @@ class PartBuilder {
   private positions = new Float32Array(48);
   private normals = new Float32Array(48);
   private indices = new Uint32Array(24);
+  /** Corners of each face, for welding. */
+  private readonly sizes: number[] = [];
   private vertices = 0;
   private indexCount = 0;
   faces = 0;
@@ -597,6 +620,7 @@ class PartBuilder {
     this.vertices += 4;
     this.index(first, first + 1, first + 2);
     this.index(first, first + 2, first + 3);
+    this.sizes.push(4);
     this.faces++;
   }
 
@@ -610,9 +634,11 @@ class PartBuilder {
     }
     this.vertices += 3;
     this.index(first, first + 1, first + 2);
+    this.sizes.push(3);
     this.faces++;
   }
 
+  /** Every face with its own vertices and normals. */
   build(index: number, color: Rgba): MeshPart {
     return {
       index,
@@ -621,6 +647,12 @@ class PartBuilder {
       normals: this.normals.slice(0, this.vertices * 3),
       indices: this.indices.slice(0, this.indexCount),
     };
+  }
+
+  /** The faces welded into a manifold mesh with shared vertices and no normals. */
+  buildWelded(index: number, color: Rgba): MeshPart {
+    const { positions, indices } = weldPolygons(this.positions.subarray(0, this.vertices * 3), this.sizes);
+    return { index, color, positions, normals: null, indices };
   }
 
   private index(a: number, b: number, c: number): void {

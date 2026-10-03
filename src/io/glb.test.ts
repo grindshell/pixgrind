@@ -82,6 +82,17 @@ describe('meshToGlb', () => {
     expect(json.accessors[primitive.indices]).toMatchObject({ componentType: 5123, count: mesh.parts[0].indices.length });
   });
 
+  it('leaves out normals for watertight meshes, whose vertices are shared', () => {
+    const doc = createDocument(1, 1, palette);
+    doc.layers[0].pixels[0] = 1;
+    const mesh = buildMesh(buildVoxelModel(doc), doc.palette, { watertight: true });
+    const { json } = readGlb(meshToGlb(mesh, { name: 'cube', scale: 1 }));
+    const [primitive] = json.meshes[0].primitives;
+    expect(Object.keys(primitive.attributes)).toEqual(['POSITION']);
+    expect(json.accessors[primitive.attributes.POSITION].count).toBe(8);
+    expect(json.accessors[primitive.indices].count).toBe(36);
+  });
+
   it('refuses an empty mesh', () => {
     expect(() => meshToGlb({ parts: [], faces: 0, bounds: null }, { name: 'x', scale: 1 })).toThrow(/empty/);
   });
