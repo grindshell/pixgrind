@@ -78,7 +78,7 @@ export function createModelPane(editor: Editor): HTMLElement {
     mesh = buildMesh(model, doc.palette);
     renderer.setMesh(mesh);
     renderer.setGuides(doc.width, doc.height, model.depth);
-    faces.textContent = `${mesh.quads.toLocaleString()} ${mesh.quads === 1 ? 'face' : 'faces'}`;
+    faces.textContent = `${mesh.faces.toLocaleString()} ${mesh.faces === 1 ? 'face' : 'faces'}`;
     if (!camera || framedSize !== `${doc.width}x${doc.height}`) frameModel();
     requestDraw();
   });

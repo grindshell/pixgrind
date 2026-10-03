@@ -1,5 +1,5 @@
 import { parseHex, toHex } from '../core/color.ts';
-import { DEFAULT_EXTRUSION, isExtrusion } from '../core/extrusion.ts';
+import { DEFAULT_EXTRUSION, extrusionShape, isExtrusion, isShape, SQUARE, withShape } from '../core/extrusion.ts';
 import { createLayer, type Layer } from '../core/layer.ts';
 import { createPalette, MAX_PALETTE_COLORS, TRANSPARENT } from '../core/palette.ts';
 import { createDocument, type PixelDocument } from '../core/pixelDocument.ts';
@@ -20,10 +20,12 @@ import { bytesToUint16, deflate, fromBase64, inflate, toBase64, uint16ToBytes } 
  * 1. The first.
  * 2. Layers may have `extrusion`. Version 1 files are version 2 files
  *    without it, so they need no migration.
+ * 3. Layers may have `shapes` (diagonal pixels). Version 2 files are
+ *    version 3 files without it.
  */
 
 export const PROJECT_EXTENSION = 'pixgrind';
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 3;
 const FORMAT = 'pixgrind';
 
 /** A reference image as saved in a project: the original file plus its placement and settings. */
@@ -42,10 +44,10 @@ export interface Project {
   reference: ProjectReference | null;
 }
 
-/** The file's JSON, version 2. */
-interface ProjectFileV2 {
+/** The file's JSON, version 3. */
+interface ProjectFileV3 {
   format: typeof FORMAT;
-  version: 2;
+  version: 3;
   name: string;
   width: number;
   height: number;
@@ -53,11 +55,13 @@ interface ProjectFileV2 {
   palette: { name: string; colors: string[] };
   /**
    * Bottom to top. `pixels`: base64 of the zlib-compressed indices,
-   * row-major. `extrusion`: likewise for the extrusions, as little-endian
-   * 16-bit `offset << 8 | depth` (transparent pixels' are the default);
-   * absent when every painted pixel has the default extrusion.
+   * row-major. `extrusion`: likewise for the boxes, as little-endian 16-bit
+   * `offset << 8 | depth` (transparent pixels' are the default); absent when
+   * every painted pixel has the default box. `shapes`: likewise, a byte per
+   * pixel (`Shape`: 0 square, 1–4 the corner cut off, clockwise from the top
+   * left; 0 for transparent pixels); absent when every pixel is square.
    */
-  layers: Array<{ name: string; visible: boolean; opacity: number; pixels: string; extrusion?: string }>;
+  layers: Array<{ name: string; visible: boolean; opacity: number; pixels: string; extrusion?: string; shapes?: string }>;
   reference?: {
     name: string;
     /** MIME type of the image file. */
@@ -86,9 +90,9 @@ export async function serializeProject(doc: PixelDocument, reference: ProjectRef
     visible,
     opacity,
     pixels: pixels.slice(),
-    extrusion: savedExtrusion(pixels, extrusion),
+    ...savedExtrusion(pixels, extrusion),
   }));
-  const header: Omit<ProjectFileV2, 'layers' | 'reference'> = {
+  const header: Omit<ProjectFileV3, 'layers' | 'reference'> = {
     format: FORMAT,
     version: PROJECT_VERSION,
     name: doc.name,
@@ -98,13 +102,14 @@ export async function serializeProject(doc: PixelDocument, reference: ProjectRef
   };
   const ref = reference && { ...reference };
 
-  const file: ProjectFileV2 = {
+  const file: ProjectFileV3 = {
     ...header,
     layers: await Promise.all(
-      layers.map(async ({ pixels, extrusion, ...props }) => ({
+      layers.map(async ({ pixels, boxes, shapes, ...props }) => ({
         ...props,
         pixels: toBase64(await deflate(pixels)),
-        ...(extrusion && { extrusion: toBase64(await deflate(uint16ToBytes(extrusion))) }),
+        ...(boxes && { extrusion: toBase64(await deflate(uint16ToBytes(boxes))) }),
+        ...(shapes && { shapes: toBase64(await deflate(shapes)) }),
       })),
     ),
   };
@@ -117,18 +122,30 @@ export async function serializeProject(doc: PixelDocument, reference: ProjectRef
 }
 
 /**
- * The extrusions to save: a copy with transparent pixels' set to the default
- * (they mean nothing, and this compresses better), or null when every pixel
- * has the default.
+ * The extrusions to save, split into boxes (`offset << 8 | depth`) and
+ * shapes, with transparent pixels' set to the default (they mean nothing,
+ * and this compresses better). Each is null when every pixel has the
+ * default.
  */
-function savedExtrusion(pixels: Uint8Array, extrusion: Uint16Array): Uint16Array | null {
-  const saved = extrusion.slice();
-  let custom = false;
-  for (let i = 0; i < saved.length; i++) {
-    if (pixels[i] === TRANSPARENT) saved[i] = DEFAULT_EXTRUSION;
-    else if (saved[i] !== DEFAULT_EXTRUSION) custom = true;
+function savedExtrusion(
+  pixels: Uint8Array,
+  extrusion: Uint32Array,
+): { boxes: Uint16Array | null; shapes: Uint8Array<ArrayBuffer> | null } {
+  const boxes = new Uint16Array(extrusion.length);
+  const shapes = new Uint8Array(extrusion.length);
+  let customBoxes = false;
+  let customShapes = false;
+  for (let i = 0; i < extrusion.length; i++) {
+    if (pixels[i] === TRANSPARENT) {
+      boxes[i] = DEFAULT_EXTRUSION;
+      continue;
+    }
+    boxes[i] = extrusion[i] & 0xffff;
+    shapes[i] = extrusionShape(extrusion[i]);
+    if (boxes[i] !== DEFAULT_EXTRUSION) customBoxes = true;
+    if (shapes[i] !== SQUARE) customShapes = true;
   }
-  return custom ? saved : null;
+  return { boxes: customBoxes ? boxes : null, shapes: customShapes ? shapes : null };
 }
 
 /** Reads project file text. Throws a user-readable error for anything that isn't a valid project. */
@@ -147,13 +164,13 @@ export async function parseProject(text: string): Promise<Project> {
       `This project was saved by a newer version of Pixgrind (file format ${version}; this version reads up to ${PROJECT_VERSION})`,
     );
   }
-  // Version 1 is version 2 without extrusions, which are optional.
-  return readV2(json);
+  // Versions 1 and 2 are version 3 without extrusions or shapes, which are optional.
+  return readV3(json);
 }
 
 type Json = Record<string, unknown>;
 
-async function readV2(file: Json): Promise<Project> {
+async function readV3(file: Json): Promise<Project> {
   const name = text(file, 'name', 'name');
   const width = num(file, 'width', 'width');
   const height = num(file, 'height', 'height');
@@ -216,24 +233,44 @@ async function readLayer(
     if (layer.pixels[i] > colorCount) layer.pixels[i] = TRANSPARENT;
   }
   if (json.extrusion !== undefined) await readExtrusion(layer, text(json, 'extrusion', `${where} extrusion`), where);
+  if (json.shapes !== undefined) await readShapes(layer, text(json, 'shapes', `${where} shapes`), where);
   return layer;
 }
 
-/** Reads a layer's saved extrusions into it (after its pixels). */
+/** Reads a layer's saved boxes into its extrusions (after its pixels). */
 async function readExtrusion(layer: Layer, encoded: string, where: string): Promise<void> {
-  let extrusion: Uint16Array;
+  let boxes: Uint16Array;
   try {
-    extrusion = bytesToUint16(await inflate(fromBase64(encoded), layer.pixels.length * 2));
+    boxes = bytesToUint16(await inflate(fromBase64(encoded), layer.pixels.length * 2));
   } catch {
     throw invalid(`${where} extrusion data is corrupted`);
   }
-  if (extrusion.length !== layer.pixels.length) {
-    throw invalid(`${where} has ${extrusion.length} extrusions for ${layer.pixels.length} pixels`);
+  if (boxes.length !== layer.pixels.length) {
+    throw invalid(`${where} has ${boxes.length} extrusions for ${layer.pixels.length} pixels`);
   }
-  for (let i = 0; i < extrusion.length; i++) {
+  for (let i = 0; i < boxes.length; i++) {
     if (layer.pixels[i] === TRANSPARENT) continue;
-    if (!isExtrusion(extrusion[i])) throw invalid(`${where} has a pixel extruded 0 deep`);
-    layer.extrusion[i] = extrusion[i];
+    if (!isExtrusion(boxes[i])) throw invalid(`${where} has a pixel extruded 0 deep`);
+    layer.extrusion[i] = withShape(boxes[i], extrusionShape(layer.extrusion[i]));
+  }
+}
+
+/** Reads a layer's saved shapes into its extrusions (after its pixels). */
+async function readShapes(layer: Layer, encoded: string, where: string): Promise<void> {
+  let shapes: Uint8Array;
+  try {
+    shapes = await inflate(fromBase64(encoded), layer.pixels.length);
+  } catch {
+    throw invalid(`${where} shape data is corrupted`);
+  }
+  if (shapes.length !== layer.pixels.length) {
+    throw invalid(`${where} has ${shapes.length} shapes for ${layer.pixels.length} pixels`);
+  }
+  for (let i = 0; i < shapes.length; i++) {
+    if (layer.pixels[i] === TRANSPARENT) continue;
+    const shape = shapes[i];
+    if (!isShape(shape)) throw invalid(`${where} has a pixel of unknown shape ${shape}`);
+    layer.extrusion[i] = withShape(layer.extrusion[i], shape);
   }
 }
 

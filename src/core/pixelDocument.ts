@@ -44,7 +44,7 @@ export interface FloatingPixels extends Mask {
    */
   pixels: Uint8Array;
   /** The lifted pixels' extrusions, parallel to `pixels`. */
-  extrusion: Uint16Array;
+  extrusion: Uint32Array;
   /**
    * The layer's cell (index and extrusion, see `Cell`) under each
    * non-transparent pixel inside the document, parallel to `pixels` (other

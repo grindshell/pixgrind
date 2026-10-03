@@ -1,6 +1,6 @@
 import type { PixelEditSession } from '../core/edits.ts';
 import { carveCell, extendCell } from '../core/extrusion.ts';
-import { pixelRuns, runAt, type VoxelModel } from '../core/model.ts';
+import { pixelRuns, runAt, seenFromRight, type VoxelModel } from '../core/model.ts';
 import { TRANSPARENT } from '../core/palette.ts';
 import { cellAt } from '../core/pixelDocument.ts';
 import { plotLine } from '../core/raster.ts';
@@ -135,7 +135,7 @@ export function createSidePane(editor: Editor): HTMLElement {
       const slot: ColorSlot = e.button === BUTTON_SECONDARY ? 'secondary' : 'primary';
       const at = cellAtPointer(e);
       if (e.altKey) {
-        pickColor(at, slot);
+        pickColor(at, upperHalf(e), slot);
         return;
       }
       // Painting on a hidden layer would change pixels the user can't see.
@@ -150,10 +150,19 @@ export function createSidePane(editor: Editor): HTMLElement {
     canvas.setPointerCapture(e.pointerId);
   });
 
-  const pickColor = ({ z, y }: SideCell, slot: ColorSlot) => {
+  /** Whether the pointer is in the upper half of its cell, where a diagonal pixel may show another color. */
+  const upperHalf = (e: MouseEvent): boolean => {
+    const { zoom, offsetY } = editor.viewport;
+    const y = (e.clientY - canvas.getBoundingClientRect().top - offsetY) / zoom;
+    return y - Math.floor(y) < 0.5;
+  };
+
+  /** Picks the color shown at a cell, in its upper or lower half. */
+  const pickColor = ({ z, y }: SideCell, upper: boolean, slot: ColorSlot) => {
     if (y < 0 || y >= doc.height || editor.sliceColumn >= doc.width) return;
-    const index = runAt(pixelRuns(doc, editor.sliceColumn, y), z)?.index;
-    if (index !== undefined && index !== editor.colorIndex(slot)) editor.setColorIndex(slot, index);
+    const run = runAt(pixelRuns(doc, editor.sliceColumn, y), z);
+    const index = run && seenFromRight(run.quarters, upper);
+    if (index && index !== editor.colorIndex(slot)) editor.setColorIndex(slot, index);
   };
 
   canvas.addEventListener('pointermove', (e) => {

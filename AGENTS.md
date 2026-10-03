@@ -34,7 +34,7 @@ Built so far:
 - Tools in a vertical strip beside the canvas: Rectangle select (M), Lasso
   select (Q), Polygonal lasso (Shift+Q), Magic wand (W), Move (V), Pencil
   (B), Eraser (E), Line (L), Rectangle (R), Filled rectangle (Shift+R), Fill
-  (G), Eyedropper (I), Extrude (D).
+  (G), Eyedropper (I), Extrude (D), Diagonal (Shift+D).
   - The left button paints the primary color and the right button the
     secondary color (transparent by default, so right-click erases). X
     swaps them.
@@ -113,15 +113,23 @@ Built so far:
   duplicate, delete, move up/down, merge down, opacity slider. All undoable
   except show/hide.
 - 3D model (see 3D model below):
-  - Every painted pixel has an extrusion: depth 1–255 and offset 0–255
-    (default 1 deep at offset 0). Moves, floats, copy/paste, merge down,
-    undo and project files carry it with the pixel.
+  - Every painted pixel has an extrusion: depth 1–255, offset 0–255 and a
+    shape, a square or a diagonal half with one corner cut off (default a
+    square 1 deep at offset 0). Moves, floats, copy/paste, merge down, undo
+    and project files carry it with the pixel.
   - 3D model panel: Side and 3D view toggles, the Extrude tool's depth and
-    offset, Apply to selection (or layer), depth labels on the canvas
-    (zoom 12× or more), and GLB export at a chosen size per pixel.
+    offset with Apply depth (to the selection or layer), the Diagonal
+    tool's shape (Auto, a corner, or square) with Apply shape, depth labels
+    and diagonal cuts on the canvas (labels at zoom 12× or more), and GLB
+    export at a chosen size per pixel.
   - Extrude tool (D): paints the panel's depth and offset onto painted
-    pixels with the brush; right-click resets them. Pressing also picks the
-    side view's column.
+    pixels with the brush; right-click resets them. Shapes stay. Pressing
+    also picks the side view's column.
+  - Diagonal tool (Shift+D): paints the panel's shape onto painted pixels,
+    keeping depths; right-click makes them square. Auto cuts the corner
+    between a pixel's two empty sides (the steps of a staircase edge, which
+    become a smooth 45° slope) and leaves other pixels. While it's active
+    the canvas shades the corners diagonal pixels cut off.
   - Side view pane: one column from the right, rows level with the canvas.
     Painting a cell adds that depth to the pixel's box (or makes a new
     pixel); transparent (right-click by default) takes it away. Alt+click
@@ -130,7 +138,8 @@ Built so far:
     wheel to zoom, double-click or Reset view to frame the model.
   - Panes open beside the canvas; drag their left edge to resize.
   - Meshes merge same-color faces that lie side by side in one plane, so
-    flat areas and straight edges are one quad each (3D view and GLB).
+    flat areas and straight edges, slopes included, are one quad each (3D
+    view and GLB).
 
 Follow-ups:
 - 3D model:
@@ -138,8 +147,11 @@ Follow-ups:
     meet at corners (today each quad has its own four), and fewer
     rectangles where rows don't repeat exactly (e.g. a minimum rectangle
     partition per plane).
-  - "Diagonal" pixels: a pixel whose extrusion is a slanted face instead of
-    a cube.
+  - More diagonal slopes: 2:1 and 1:2 (common in pixel art, isometric
+    especially). They cut across pixel pairs, which quarters can't
+    describe, so they need finer pixel shapes and partial side faces.
+  - Slopes in depth: a box whose front or back end tilts (ramps in the side
+    view), e.g. for noses and roofs.
   - A wider side view: edit along rows (top view) as well as columns.
   - Layer opacity in 3D (today only visibility counts).
 - Files:
@@ -225,7 +237,8 @@ src/
                  geometry), mask (pixel sets: selection shapes, lasso,
                  combining, outlines), floodFill (+ colorRegion), image (RGBA
                  ↔ indices, upscale, flatten), extrusion (packed extrusions
-                 and cells, side view cell edits), model (voxel runs, mesh),
+                 and shapes, cells, side view cell edits, autoShape), model
+                 (voxel runs by quarter, mesh),
                  edits (undoable changes), layerEdits / selection /
                  paletteEdits / documentEdits / extrusionEdits (edit
                  constructors), history
@@ -379,7 +392,8 @@ storage without updating this section and the palette-swap design.
   an anchor, center, and the logarithmic slider mapping. Scale is clamped to
   0.01–64.
 - Rendering order: checkerboard, then the reference if below, then artwork,
-  then the reference if above, then depth labels, then the side view's
+  then the reference if above, then extrusions (diagonal cuts and depth
+  labels), then the side view's
   column band, then floating pixels off the document, then
   the selection (or float) outline, then a lasso being drawn, then the
   brush outline. The reference is clipped
@@ -426,9 +440,11 @@ storage without updating this section and the palette-swap design.
     the canvas without their own subscriptions to every change.
 - `render(doc, viewport, overlays)` takes what isn't document data as
   `RenderOverlays`: the reference image, the brush cursor, the lasso, the
-  side view's column (`slice`) and the layer to label with depths
-  (`depthLabels`). Labels are drawn into a cached canvas, redrawn only
-  when the content, layer or view changes: text is slow.
+  side view's column (`slice`) and the layer whose extrusions to show
+  (`extrusions`: the corners diagonal pixels cut off, shaded from zoom 4×,
+  and with `depths` the depth labels from zoom 12×). They're drawn into a
+  cached canvas, redrawn only when the content, layer or view changes:
+  text is slow.
 
 ### Tools and input
 
@@ -727,7 +743,9 @@ storage without updating this section and the palette-swap design.
     a session, `pixelEditFromArray` diffs a whole-layer array (and
     optionally extrusions), which is much faster than
     `pixelEditFromValues`' map for big changes.
-  - `setExtrusion` changes a painted pixel's extrusion, `setCell` a pixel's
+  - `updateExtrusion` changes a painted pixel's extrusion (through a
+    function of the current one, so tools keep what they don't paint),
+    `setCell` a pixel's
     index and extrusion together. `pixelEditFromCells` is the map version
     for cells (floats and pastes use it); `pixelEditFromValues` sets indices
     only.
@@ -736,10 +754,18 @@ storage without updating this section and the palette-swap design.
 
 ### 3D model
 
-- **Extrusions** (`core/extrusion.ts`): each layer has `extrusion: Uint16Array`
-  parallel to `pixels`, packed as `offset << 8 | depth`. A pixel's box fills
-  z from `offset` to `offset + depth` (z grows away from the viewer, into
-  the picture). Depth is 1–255, offset 0–255.
+- **Extrusions** (`core/extrusion.ts`): each layer has `extrusion: Uint32Array`
+  parallel to `pixels`, packed as `shape << 16 | offset << 8 | depth`. A
+  pixel's box fills z from `offset` to `offset + depth` (z grows away from
+  the viewer, into the picture). Depth is 1–255, offset 0–255.
+  - `Shape` is how the box looks from the front: `SQUARE` (0), or the right
+    triangle left when one corner is cut off along the diagonal
+    (`CUT_TOP_LEFT` … `CUT_BOTTOM_LEFT`, 1–4 clockwise). `withBox` and
+    `withShape` change one part and keep the other; the Extrude tool, Apply
+    depth and the side view keep shapes, the Diagonal tool keeps boxes.
+  - `autoShape` picks the corner from the layer's pixels: the one between
+    exactly two empty sides that meet (off the document counts as empty),
+    else null.
   - Only meaningful where the pixel is painted. `setPixel` resets it to
     `DEFAULT_EXTRUSION` (1 deep at offset 0) when painting where there was
     no pixel, so an erased pixel's box never comes back. Writing a
@@ -751,25 +777,40 @@ storage without updating this section and the palette-swap design.
   stacking layers puts several boxes behind the same pixel, with gaps
   between. There's no list of boxes per pixel.
 - **Model** (`core/model.ts`, pure):
+  - Each pixel is split by both diagonals into four **quarters** (`TOP`,
+    `RIGHT`, `BOTTOM`, `LEFT`), each touching one side. A square fills all
+    four, a diagonal half two. A `Run` keeps a palette index per quarter
+    (`Quarters`, packed bytes, 0 where empty), so culling between pixels
+    and diagonal halves is exact, and a diagonal pixel over a square on a
+    lower layer shows the square in its cut-off half.
   - `buildVoxelModel` turns visible layers (opacity above 0) into sorted
-    runs per pixel. Upper layers win where boxes overlap, as in 2D; touching
-    same-color runs merge. Fully transparent palette colors are left out;
-    layer opacity isn't modeled. `pixelRuns` builds one pixel's runs (the
-    side view's column) without the rest.
-  - `buildMesh` makes quads per palette color (a `MeshPart` each). Faces
+    runs per pixel. Upper layers win where boxes overlap, as in 2D, in the
+    quarters they fill; touching runs with the same quarters merge. Fully
+    transparent palette colors are left out; layer opacity isn't modeled.
+    `pixelRuns` builds one pixel's runs (the side view's column) without the
+    rest. `seenFromRight` is what the side view shows in each half of a cell.
+  - `buildMesh` makes faces per palette color (a `MeshPart` each). Faces
     covered by a neighbor that's opaque or the same color are dropped, so
     translucent colors show what's behind them but no faces inside
-    themselves. Side faces are cut into the stretches nothing covers.
+    themselves. Side faces are cut into the stretches nothing covers, and
+    belong to the quarter on that side. Between two quarters of a pixel
+    that differ, slanted faces (normals at 45°) run along the half-diagonal.
+    Front and back faces that aren't whole squares are triangles (a half of
+    one color is one triangle).
   - Faces of one color side by side in one plane merge into rectangles
     (`FacePlane`, one per facing and plane): spans join along a row, and a
     rectangle grows into the next row while that row repeats its span
-    exactly. Linear time, emitting each rectangle as soon as it closes
-    (keeping them all made garbage collection dominate). Not the fewest
-    rectangles possible, but a flat area or a straight edge is one quad.
-    Merged quads meet at T-junctions, which hasn't shown seams.
-  - The test checks the mesh unit face by unit face against a voxel-by-voxel
-    reference on random documents: every exposed face covered exactly once.
-    Keep it when changing the merging.
+    exactly. Slanted planes are the 45° lines through pixel corners, with a
+    row per half-diagonal, so a staircase's slope is one quad. Linear time,
+    emitting each rectangle as soon as it closes (keeping them all made
+    garbage collection dominate). Not the fewest rectangles possible, but a
+    flat area or a straight edge is one quad. Merged quads meet at
+    T-junctions, which hasn't shown seams. Triangles aren't merged.
+  - The test checks the mesh piece by piece (each quarter's front and back,
+    side and half-diagonals) against a voxel-by-voxel reference on random
+    documents with diagonals: every exposed piece covered exactly once,
+    hidden ones not at all, and no extra area. Keep it when changing the
+    mesh.
   - Mesh coordinates follow glTF: y up, front faces +z, one unit per pixel,
     x centered on the document, y = 0 at its bottom edge, z = 0 at the
     picture plane (boxes go toward -z). Triangles are counter-clockwise from
@@ -779,10 +820,13 @@ storage without updating this section and the palette-swap design.
   derived data through `adaptiveThrottle` (`ui/throttle.ts`): every frame
   when fast, otherwise no sooner than 3× the last build's time, with a
   trailing run so the last change always shows.
-- **Extrude tool and panel**: `Editor.extrude` (depth, offset) is what the
-  tool's left button paints and what Apply sets (`setExtrusionEdit`,
-  `core/extrusionEdits.ts`, on the selection or the whole layer). Writes go
-  through strokes, so they're clipped to the selection and undoable.
+- **Extrude and Diagonal tools and the panel**: `Editor.extrude` (depth,
+  offset) is what the Extrude tool's left button paints and what Apply
+  depth sets; `Editor.diagonal` (a `Shape` or `'auto'`) likewise for the
+  Diagonal tool and Apply shape. Both tools share `extrusionStroke`; the
+  buttons use `updateExtrusionsEdit` (`core/extrusionEdits.ts`, on the
+  selection or the whole layer). Writes go through strokes, so they're
+  clipped to the selection and undoable.
 - **Panes** (`ui/paneFrame.ts`): open beside the canvas in `.workspace`, set
   by `Editor.setPaneOpen('side' | 'model', open)`. Each has a canvas, a
   floating bar (title, controls, close), and a resize handle on its left
@@ -794,7 +838,9 @@ storage without updating this section and the palette-swap design.
     shared viewport; middle-drag pans both.
   - Cells under the column show at full color, the rest of the model
     (rightmost box per cell) faintly behind; the active layer's boxes in the
-    column are outlined.
+    column are outlined. Each cell's upper and lower half show what a viewer
+    on the right sees there (they differ only for diagonal pixels), and
+    Alt+click picks the half under the pointer.
   - Painting: `extendCell` (grow the box to reach z, or a new pixel one deep)
     with a color, `carveCell` with transparent (a box has no gaps, so it's
     trimmed from the nearer end; the back on a tie; a one-deep box becomes
@@ -860,15 +906,17 @@ storage without updating this section and the palette-swap design.
   - Layers bottom to top: name, visible, opacity, and `pixels`, which is
     base64 of the zlib-compressed (`CompressionStream('deflate')`) palette
     indices, row-major. Optionally `extrusion`, likewise for little-endian
-    16-bit extrusions, written only when a painted pixel isn't at the
-    default (transparent pixels are saved as the default).
+    16-bit boxes (`offset << 8 | depth`), written only when a painted pixel
+    isn't at the default (transparent pixels are saved as the default), and
+    `shapes`, a byte per pixel, written only when one isn't square.
   - An optional `reference`: the original image file (base64) with its MIME
     type, placement and settings. It's re-decoded on load.
 - Not saved: the selection, floating selection (its on-canvas pixels are in
   the layer; off-canvas ones are lost), history, view, active layer, tool or
   paint colors. Layer ids are regenerated on load.
-- `PROJECT_VERSION` is 2 (2 added `extrusion`; version 1 files are version
-  2 files without it). When the schema changes, bump it and keep reading
+- `PROJECT_VERSION` is 3 (2 added `extrusion`, 3 added `shapes`; older
+  files are version 3 files without them). When the schema changes, bump it
+  and keep reading
   every older version by migrating its JSON to the current shape before
   reading. A newer version than this build knows is refused with a clear
   message, never half-read.

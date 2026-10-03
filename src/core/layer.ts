@@ -14,7 +14,7 @@ export interface Layer {
    * `pixels`. Meaningless where the pixel is transparent: a pixel painted
    * there starts at the default again.
    */
-  extrusion: Uint16Array;
+  extrusion: Uint32Array;
 }
 
 export function createLayer(width: number, height: number, name: string): Layer {

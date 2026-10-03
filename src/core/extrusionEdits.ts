@@ -6,14 +6,15 @@ import { TRANSPARENT } from './palette.ts';
 import type { PixelDocument } from './pixelDocument.ts';
 
 /**
- * Gives every painted pixel of `layer` in `area` (inside the document; null
- * for the whole layer) the same extrusion. Null when nothing changes.
+ * Changes the extrusion of every painted pixel of `layer` in `area` (inside
+ * the document; null for the whole layer) to `update(its extrusion, x, y)`.
+ * Null when nothing changes.
  */
-export function setExtrusionEdit(
+export function updateExtrusionsEdit(
   doc: PixelDocument,
   layer: Layer,
   area: Mask | null,
-  extrusion: Extrusion,
+  update: (extrusion: Extrusion, x: number, y: number) => Extrusion,
   label = 'Set extrusion',
 ): PixelEdit | null {
   const after = layer.extrusion.slice();
@@ -21,7 +22,9 @@ export function setExtrusionEdit(
   for (let row = y; row < y + height; row++) {
     for (let column = x; column < x + width; column++) {
       const offset = row * doc.width + column;
-      if (layer.pixels[offset] !== TRANSPARENT && (!area || maskHas(area, column, row))) after[offset] = extrusion;
+      if (layer.pixels[offset] !== TRANSPARENT && (!area || maskHas(area, column, row))) {
+        after[offset] = update(layer.extrusion[offset], column, row);
+      }
     }
   }
   return pixelEditFromArray(layer, label, layer.pixels, after);

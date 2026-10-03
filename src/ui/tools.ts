@@ -1,7 +1,7 @@
 import { brushLine, brushMask, brushRect, type BrushMask } from '../core/brush.ts';
 import { visibleIndexAt } from '../core/composite.ts';
 import { combineEdits, type PixelEditSession } from '../core/edits.ts';
-import { DEFAULT_EXTRUSION, packExtrusion, type Cell } from '../core/extrusion.ts';
+import { autoShape, SQUARE, withBox, withShape, type Cell, type Extrusion } from '../core/extrusion.ts';
 import { colorRegion, floodRegion } from '../core/floodFill.ts';
 import {
   clipMask,
@@ -36,6 +36,7 @@ export type ToolId =
   | 'fill'
   | 'eyedropper'
   | 'extrude'
+  | 'diagonal'
   | 'reference';
 
 /** Pointer position in document pixels, plus modifiers tools care about. */
@@ -218,11 +219,33 @@ const fill: Tool = {
   },
 };
 
+/** Drags the brush over painted pixels of the active layer, changing each one's extrusion to `update(it, x, y)`. */
+function extrusionStroke(
+  editor: Editor,
+  start: ToolInput,
+  label: string,
+  update: (extrusion: Extrusion, x: number, y: number) => Extrusion,
+): ToolGesture {
+  const session = editor.beginStroke(label);
+  const mask = brushMask(editor.brush);
+  let last: Point = start;
+  const paintTo = (to: Point) => {
+    let changed = false;
+    brushLine(mask, last.x, last.y, to.x, to.y, (x, y) => {
+      changed = session.updateExtrusion(x, y, (extrusion) => update(extrusion, x, y)) || changed;
+    });
+    last = to;
+    if (changed) editor.requestRender();
+  };
+  paintTo(start);
+  return { move: paintTo, end: () => editor.endStroke() };
+}
+
 /**
  * Extrude: paints depth instead of color. The left button gives painted
  * pixels of the active layer the 3D panel's depth and offset; the right
- * button puts them back to the default (one deep, at the front). Pressing
- * also shows the pressed column in the side view.
+ * button puts them back to the default (one deep, at the front). Shapes
+ * stay. Pressing also shows the pressed column in the side view.
  */
 const extrude: Tool = {
   id: 'extrude',
@@ -232,22 +255,37 @@ const extrude: Tool = {
   paints: true,
   brush: true,
   begin(editor, start, _index, slot) {
-    const { offset, depth } = editor.extrude;
-    const extrusion = slot === 'primary' ? packExtrusion(offset, depth) : DEFAULT_EXTRUSION;
+    const primary = slot === 'primary';
+    const { offset, depth } = primary ? editor.extrude : { offset: 0, depth: 1 };
     if (start.x >= 0 && start.x < editor.doc.width) editor.setSliceColumn(start.x);
-    const session = editor.beginStroke(slot === 'primary' ? 'Extrude' : 'Reset extrusion');
-    const mask = brushMask(editor.brush);
-    let last: Point = start;
-    const paintTo = (to: Point) => {
-      let changed = false;
-      brushLine(mask, last.x, last.y, to.x, to.y, (x, y) => {
-        changed = session.setExtrusion(x, y, extrusion) || changed;
-      });
-      last = to;
-      if (changed) editor.requestRender();
-    };
-    paintTo(start);
-    return { move: paintTo, end: () => editor.endStroke() };
+    return extrusionStroke(editor, start, primary ? 'Extrude' : 'Reset extrusion', (extrusion) =>
+      withBox(extrusion, offset, depth),
+    );
+  },
+};
+
+/**
+ * Diagonal: paints shapes instead of color, keeping depths. The left button
+ * cuts painted pixels of the active layer in half along a diagonal: at the
+ * 3D panel's corner, or with Auto at the corner between a pixel's two empty
+ * sides (the steps of a staircase edge), leaving pixels where that isn't
+ * clear. The right button makes pixels square again.
+ */
+const diagonal: Tool = {
+  id: 'diagonal',
+  label: 'Diagonal',
+  icon: 'diagonal',
+  shortcut: 'D',
+  paints: true,
+  brush: true,
+  begin(editor, start, _index, slot) {
+    const { doc } = editor;
+    const choice = slot === 'primary' ? editor.diagonal : SQUARE;
+    const { pixels } = editor.activeLayer;
+    return extrusionStroke(editor, start, slot === 'primary' ? 'Diagonal' : 'Square', (extrusion, x, y) => {
+      const shape = choice === 'auto' ? autoShape(pixels, doc.width, doc.height, x, y) : choice;
+      return shape === null ? extrusion : withShape(extrusion, shape);
+    });
   },
 };
 
@@ -536,7 +574,7 @@ const move: Tool = {
       for (const [offset, cell] of cells) session.setCell(offset % doc.width, Math.floor(offset / doc.width), cell);
     };
     /** Whole-layer moves rewrite the layer on every pointer move; these save allocating each time. */
-    let shifted: { pixels: Uint8Array; extrusion: Uint16Array } | undefined;
+    let shifted: { pixels: Uint8Array; extrusion: Uint32Array } | undefined;
 
     return {
       move(input) {
@@ -554,7 +592,7 @@ const move: Tool = {
           editor.previewFloating(moved);
           editor.previewSelection(clipMask(moved, doc.width, doc.height));
         } else {
-          shifted ??= { pixels: new Uint8Array(layer.pixels.length), extrusion: new Uint16Array(layer.pixels.length) };
+          shifted ??= { pixels: new Uint8Array(layer.pixels.length), extrusion: new Uint32Array(layer.pixels.length) };
           session.setAll(
             shiftedValues(doc, layer.pixels, dx, dy, shifted.pixels),
             shiftedValues(doc, layer.extrusion, dx, dy, shifted.extrusion),
@@ -635,6 +673,7 @@ export const TOOLS: readonly Tool[] = [
   fill,
   eyedropper,
   extrude,
+  diagonal,
   reference,
 ];
 

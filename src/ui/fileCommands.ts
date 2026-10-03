@@ -133,7 +133,7 @@ export interface ModelExportOptions {
 export function renderModelExport(doc: PixelDocument, { scale }: ModelExportOptions): { blob: Blob; faces: number } {
   const mesh = buildMesh(buildVoxelModel(doc), doc.palette);
   const blob = new Blob([meshToGlb(mesh, { name: doc.name, scale })], { type: 'model/gltf-binary' });
-  return { blob, faces: mesh.quads };
+  return { blob, faces: mesh.faces };
 }
 
 export function modelFileName(doc: PixelDocument): string {

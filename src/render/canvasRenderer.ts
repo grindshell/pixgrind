@@ -1,7 +1,7 @@
 import type { BrushMask } from '../core/brush.ts';
 import { alpha, blue, green, red } from '../core/color.ts';
 import { compositeRgba } from '../core/composite.ts';
-import { extrusionDepth, extrusionOffset } from '../core/extrusion.ts';
+import { extrusionDepth, extrusionOffset, extrusionShape, SQUARE } from '../core/extrusion.ts';
 import type { Layer } from '../core/layer.ts';
 import { maskOutline, type Mask, type OutlineRun } from '../core/mask.ts';
 import { colorForIndex, TRANSPARENT, type Palette } from '../core/palette.ts';
@@ -23,9 +23,14 @@ const SLICE_FILL = 'rgba(91, 140, 255, 0.16)';
 const SLICE_EDGE = 'rgba(91, 140, 255, 0.9)';
 /** Depth labels need this much zoom (CSS px per pixel) to be readable. */
 export const MIN_LABEL_ZOOM = 12;
+/** Diagonal pixels' shapes need this much zoom to be seen. */
+const MIN_SHAPE_ZOOM = 4;
 const LABEL_DEPTH = '#ffffff';
 const LABEL_OFFSET = '#9dbbff';
 const LABEL_OUTLINE = 'rgba(0, 0, 0, 0.85)';
+/** Over the corner a diagonal pixel cuts off, and along its cut. */
+const CUT_SHADE = 'rgba(16, 16, 22, 0.6)';
+const CUT_EDGE = 'rgba(255, 255, 255, 0.8)';
 
 /** The brush footprint at a document pixel (the one under the pointer). */
 export interface BrushCursor extends Point {
@@ -40,8 +45,12 @@ export interface RenderOverlays {
   lasso?: readonly Point[] | null;
   /** The column the side view shows, marked with a band. */
   slice?: number | null;
-  /** A layer whose painted pixels get their extrusion written on them (when zoomed in enough to read). */
-  depthLabels?: Layer | null;
+  /**
+   * A layer whose extrusions are shown on its pixels: the corners diagonal
+   * pixels cut off are shaded, and with `depths` each pixel's depth and
+   * offset are written on it (when zoomed in enough to read).
+   */
+  extrusions?: { layer: Layer; depths: boolean } | null;
 }
 
 export interface RenderOptions {
@@ -103,7 +112,7 @@ export class CanvasRenderer {
   render(
     doc: PixelDocument,
     viewport: Viewport,
-    { reference = null, brush = null, lasso = null, slice = null, depthLabels = null }: RenderOverlays = {},
+    { reference = null, brush = null, lasso = null, slice = null, extrusions = null }: RenderOverlays = {},
     { reuseComposite = false }: RenderOptions = {},
   ): void {
     const { ctx } = this;
@@ -132,7 +141,7 @@ export class CanvasRenderer {
     if (shownReference?.above) this.drawReference(shownReference, offsetX, offsetY, width, height, zoom);
     // Content can change while labels aren't shown; they're redrawn the next time they are.
     if (!reuseComposite) this.labelsStale = true;
-    if (depthLabels && zoom >= MIN_LABEL_ZOOM) this.drawDepthLabels(doc, depthLabels, offsetX, offsetY, zoom, dpr);
+    if (extrusions && zoom >= MIN_SHAPE_ZOOM) this.drawExtrusions(doc, extrusions, offsetX, offsetY, zoom, dpr);
     if (slice !== null && slice < doc.width) this.drawSlice(slice, offsetX, offsetY, height, zoom, dpr);
     if (doc.floating) this.drawFloatingOverhang(doc, doc.floating, offsetX, offsetY, width, height, zoom);
     // A float's outline shows all of it, including any part off the document.
@@ -237,26 +246,28 @@ export class CanvasRenderer {
   }
 
   /**
-   * Each painted pixel's depth in its middle, and its offset in the corner
-   * when it isn't 0. Text is slow to draw, so the labels are kept as an image
-   * until the content, layer or view changes.
+   * The cut-off corners of diagonal pixels, and with `depths` each painted
+   * pixel's depth in its middle and its offset in the corner when it isn't 0.
+   * Text is slow to draw, so this is kept as an image until the content,
+   * layer or view changes.
    */
-  private drawDepthLabels(
+  private drawExtrusions(
     doc: PixelDocument,
-    layer: Layer,
+    { layer, depths }: { layer: Layer; depths: boolean },
     offsetX: number,
     offsetY: number,
     zoom: number,
     dpr: number,
   ): void {
     const { width, height } = this.canvas;
-    const key = `${offsetX},${offsetY},${zoom},${width},${height}`;
+    const key = `${offsetX},${offsetY},${zoom},${width},${height},${depths}`;
     let cache = this.labels;
     if (!cache || this.labelsStale || cache.key !== key || cache.layer !== layer) {
       const canvas = cache?.canvas ?? document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
-      paintDepthLabels(get2dContext(canvas), doc, layer, offsetX * dpr, offsetY * dpr, zoom * dpr);
+      const labels = depths && zoom >= MIN_LABEL_ZOOM;
+      paintExtrusions(get2dContext(canvas), doc, layer, offsetX * dpr, offsetY * dpr, zoom * dpr, labels);
       cache = this.labels = { canvas, key, layer };
       this.labelsStale = false;
     }
@@ -353,17 +364,19 @@ export class CanvasRenderer {
 }
 
 /**
- * Writes the labels for the pixels in view onto a transparent canvas the
- * size of the screen canvas. Coordinates and `scale` (device px per document
- * pixel) are in device pixels.
+ * Draws the extrusions of the pixels in view onto a transparent canvas the
+ * size of the screen canvas: shapes, then (with `labels`) depth labels.
+ * Coordinates and `scale` (device px per document pixel) are in device
+ * pixels.
  */
-function paintDepthLabels(
+function paintExtrusions(
   ctx: CanvasRenderingContext2D,
   doc: PixelDocument,
   layer: Layer,
   originX: number,
   originY: number,
   scale: number,
+  labels: boolean,
 ): void {
   const { width, height } = ctx.canvas;
   ctx.clearRect(0, 0, width, height);
@@ -371,6 +384,41 @@ function paintDepthLabels(
   const right = Math.min(doc.width, Math.ceil((width - originX) / scale));
   const top = Math.max(0, Math.floor(-originY / scale));
   const bottom = Math.min(doc.height, Math.ceil((height - originY) / scale));
+
+  // Diagonal pixels: shade the corner each cuts off and mark the cut. The
+  // corners of a pixel go clockwise from the top left, the order of shapes.
+  const shade = new Path2D();
+  const cuts = new Path2D();
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const offset = y * doc.width + x;
+      const shape = extrusionShape(layer.extrusion[offset]);
+      if (shape === SQUARE || layer.pixels[offset] === TRANSPARENT) continue;
+      const px = Math.round(originX + x * scale);
+      const py = Math.round(originY + y * scale);
+      const size = Math.round(originX + (x + 1) * scale) - px;
+      const corners = [
+        [px, py],
+        [px + size, py],
+        [px + size, py + size],
+        [px, py + size],
+      ];
+      const [cut, next, , previous] = [0, 1, 2, 3].map((k) => corners[(shape - 1 + k) % 4]);
+      shade.moveTo(cut[0], cut[1]);
+      shade.lineTo(next[0], next[1]);
+      shade.lineTo(previous[0], previous[1]);
+      shade.closePath();
+      cuts.moveTo(next[0], next[1]);
+      cuts.lineTo(previous[0], previous[1]);
+    }
+  }
+  ctx.fillStyle = CUT_SHADE;
+  ctx.fill(shade);
+  ctx.lineWidth = Math.max(1, Math.round(scale / 16));
+  ctx.strokeStyle = CUT_EDGE;
+  ctx.stroke(cuts);
+  if (!labels) return;
+
   const depthFont = Math.round(scale * 0.42);
   const offsetFont = Math.round(scale * 0.28);
   const font = (size: number) => `600 ${size}px ui-monospace, 'Cascadia Mono', Consolas, monospace`;

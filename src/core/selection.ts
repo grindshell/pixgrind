@@ -39,7 +39,7 @@ export function selectionChange(before: Mask | null, after: Mask | null, label: 
  * document are dropped. Writes into `out` (not `values` itself), so moves can
  * reuse one buffer.
  */
-export function shiftedValues<T extends Uint8Array | Uint16Array>(
+export function shiftedValues<T extends Uint8Array | Uint32Array>(
   doc: PixelDocument,
   values: T,
   dx: number,
@@ -67,7 +67,7 @@ export function shiftLayerEdit(doc: PixelDocument, layer: Layer, dx: number, dy:
     layer,
     label,
     shiftedValues(doc, pixels, dx, dy, new Uint8Array(pixels.length)),
-    shiftedValues(doc, extrusion, dx, dy, new Uint16Array(extrusion.length)),
+    shiftedValues(doc, extrusion, dx, dy, new Uint32Array(extrusion.length)),
   );
 }
 
@@ -91,12 +91,12 @@ export function selectedPixels(doc: PixelDocument, layer: Layer, area: Mask): Ui
 }
 
 /** A copy of `layer`'s extrusions in `area` (inside the document), laid out as `selectedPixels`. */
-export function selectedExtrusion(doc: PixelDocument, layer: Layer, area: Mask): Uint16Array {
-  return copyArea(doc, layer.extrusion, area.rect, new Uint16Array(area.rect.width * area.rect.height));
+export function selectedExtrusion(doc: PixelDocument, layer: Layer, area: Mask): Uint32Array {
+  return copyArea(doc, layer.extrusion, area.rect, new Uint32Array(area.rect.width * area.rect.height));
 }
 
 /** Copies the layer-sized `values` in `rect` (inside the document) into `out`, row-major over `rect`. */
-function copyArea<T extends Uint8Array | Uint16Array>(doc: PixelDocument, values: T, rect: Rect, out: T): T {
+function copyArea<T extends Uint8Array | Uint32Array>(doc: PixelDocument, values: T, rect: Rect, out: T): T {
   for (let j = 0; j < rect.height; j++) {
     const start = (rect.y + j) * doc.width + rect.x;
     out.set(values.subarray(start, start + rect.width), j * rect.width);
@@ -149,7 +149,7 @@ export function placeFloatingEdit(
   doc: PixelDocument,
   layer: Layer,
   pixels: Uint8Array,
-  extrusion: Uint16Array,
+  extrusion: Uint32Array,
   area: Mask,
   label: string,
 ): Edit | null {

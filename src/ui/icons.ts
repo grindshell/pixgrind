@@ -34,6 +34,13 @@ const ICONS = {
   eyedropper:
     '<path d="M10.5 3a1.6 1.6 0 0 1 2.5 2.5l-1.5 1.5-2.5-2.5zM9.5 5l-6 6-.5 2 2-.5 6-6M8.5 4l3.5 3.5"/>',
   extrude: '<path d="M2.5 6.5h7v7h-7zM2.5 6.5l4-4h7l-4 4M13.5 2.5v7l-4 4"/>',
+  diagonal: '<path d="M2.5 13.5v-3h3v-3h3v-3h3v-2" stroke-opacity=".45"/><path d="M2.5 13.5l11-11v11z" fill="currentColor" fill-opacity=".35"/>',
+  // Pixel shapes: the half (or whole) that's kept, inside the pixel's outline.
+  shapeSquare: '<rect x="2.5" y="2.5" width="11" height="11" fill="currentColor"/>',
+  cutTopLeft: '<rect x="2.5" y="2.5" width="11" height="11" stroke-opacity=".35"/><path d="M13.5 2.5v11h-11z" fill="currentColor"/>',
+  cutTopRight: '<rect x="2.5" y="2.5" width="11" height="11" stroke-opacity=".35"/><path d="M2.5 2.5v11h11z" fill="currentColor"/>',
+  cutBottomRight: '<rect x="2.5" y="2.5" width="11" height="11" stroke-opacity=".35"/><path d="M2.5 13.5v-11h11z" fill="currentColor"/>',
+  cutBottomLeft: '<rect x="2.5" y="2.5" width="11" height="11" stroke-opacity=".35"/><path d="M2.5 2.5h11v11z" fill="currentColor"/>',
   close: '<path d="M4 4l8 8M12 4l-8 8"/>',
   chevronLeft: '<path d="M10 3.5L5.5 8l4.5 4.5"/>',
   chevronRight: '<path d="M6 3.5L10.5 8 6 12.5"/>',

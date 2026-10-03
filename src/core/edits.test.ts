@@ -209,11 +209,12 @@ describe('extrusion edits', () => {
     const doc = docWithPixel(0, 0, 1);
     const [layer] = doc.layers;
     const session = beginPixelEdit(doc, layer, 'Extrude');
-    expect(session.setExtrusion(0, 0, DEEP)).toBe(true);
-    expect(session.setExtrusion(1, 0, DEEP)).toBe(false); // transparent: nothing to extrude
+    expect(session.updateExtrusion(0, 0, () => DEEP)).toBe(true);
+    expect(session.updateExtrusion(0, 0, (e) => e)).toBe(false); // unchanged
+    expect(session.updateExtrusion(1, 0, () => DEEP)).toBe(false); // transparent: nothing to extrude
     const edit = session.finish()!;
     expect(Array.from(edit.offsets)).toEqual([0]);
-    expect(edit.extrusion).toEqual({ before: Uint16Array.of(DEFAULT_EXTRUSION), after: Uint16Array.of(DEEP) });
+    expect(edit.extrusion).toEqual({ before: Uint32Array.of(DEFAULT_EXTRUSION), after: Uint32Array.of(DEEP) });
     applyEdit(doc, edit, 'undo');
     expect(layer.extrusion[0]).toBe(DEFAULT_EXTRUSION);
     applyEdit(doc, edit, 'redo');
@@ -243,7 +244,7 @@ describe('extrusion edits', () => {
     const doc = createDocument(2, 1, palette);
     const [layer] = doc.layers;
     const session = beginPixelEdit(doc, layer, 'Move');
-    session.setAll(new Uint8Array(2), Uint16Array.of(DEEP, DEEP));
+    session.setAll(new Uint8Array(2), Uint32Array.of(DEEP, DEEP));
     expect(session.finish()).toBeNull();
   });
 

@@ -1,7 +1,7 @@
 import { alpha, blue, green, red } from '../core/color.ts';
 import { extrusionEnd, extrusionOffset, MAX_Z } from '../core/extrusion.ts';
 import type { Layer } from '../core/layer.ts';
-import { pixelRuns, type Run, type VoxelModel } from '../core/model.ts';
+import { pixelRuns, seenFromRight, type Run, type VoxelModel } from '../core/model.ts';
 import { colorForIndex, TRANSPARENT, type Palette } from '../core/palette.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
 import { createChecker, get2dContext } from './canvasRenderer.ts';
@@ -155,18 +155,18 @@ export class SideRenderer {
     ctx.stroke();
   }
 
-  /** The whole model seen from the right, one image pixel per cell. Rebuilt when the model changes. */
+  /** The whole model seen from the right, two image pixels per cell (its halves). Rebuilt when the model changes. */
   private projectionCanvas(model: VoxelModel, palette: Palette, extent: number): HTMLCanvasElement {
     const cached = this.projection;
     if (cached?.model === model && cached.extent === extent) return cached.canvas;
     const canvas = cached?.canvas ?? document.createElement('canvas');
     const { width, height, columns } = model;
-    const image = new ImageData(extent, height);
+    const image = new ImageData(extent, height * 2);
     for (let y = 0; y < height; y++) {
       // Left to right, so the rightmost box (nearest a viewer on the right) wins.
       for (let x = 0; x < width; x++) {
         const runs = columns[y * width + x];
-        if (runs) for (const run of runs) fillRun(image, y, run.start, Math.min(run.end, extent), colorForIndex(palette, run.index));
+        if (runs) for (const run of runs) fillRun(image, y, run, extent, palette);
       }
     }
     putImage(canvas, image);
@@ -184,13 +184,13 @@ export class SideRenderer {
     return this.slice;
   }
 
-  /** The column's boxes, one image pixel per cell. */
+  /** The column's boxes, two image pixels per cell (its halves). */
   private sliceCanvas(slice: SliceRuns, palette: Palette, extent: number): HTMLCanvasElement {
     if (slice.image?.extent === extent) return slice.image.canvas;
     const canvas = slice.image?.canvas ?? this.sliceImage ?? document.createElement('canvas');
-    const image = new ImageData(extent, slice.rows.length);
+    const image = new ImageData(extent, slice.rows.length * 2);
     slice.rows.forEach((runs, y) => {
-      if (runs) for (const run of runs) fillRun(image, y, run.start, Math.min(run.end, extent), colorForIndex(palette, run.index));
+      if (runs) for (const run of runs) fillRun(image, y, run, extent, palette);
     });
     putImage(canvas, image);
     this.sliceImage = canvas;
@@ -207,13 +207,24 @@ interface SliceRuns {
   image: { extent: number; canvas: HTMLCanvasElement } | null;
 }
 
-function fillRun(image: ImageData, y: number, from: number, to: number, color: number): void {
-  for (let z = from; z < to; z++) {
-    const o = (y * image.width + z) * 4;
-    image.data[o] = red(color);
-    image.data[o + 1] = green(color);
-    image.data[o + 2] = blue(color);
-    image.data[o + 3] = alpha(color);
+/**
+ * Draws a run of row y into an image with two rows per document row: each
+ * half shows what a viewer on the right sees there, which differs only for
+ * diagonal pixels.
+ */
+function fillRun(image: ImageData, y: number, run: Run, extent: number, palette: Palette): void {
+  for (const upper of [true, false]) {
+    const index = seenFromRight(run.quarters, upper);
+    if (!index) continue;
+    const color = colorForIndex(palette, index);
+    const row = y * 2 + (upper ? 0 : 1);
+    for (let z = run.start; z < Math.min(run.end, extent); z++) {
+      const o = (row * image.width + z) * 4;
+      image.data[o] = red(color);
+      image.data[o + 1] = green(color);
+      image.data[o + 2] = blue(color);
+      image.data[o + 3] = alpha(color);
+    }
   }
 }
 

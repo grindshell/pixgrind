@@ -184,7 +184,7 @@ export class ModelRenderer {
 
   /** Frees GPU resources. */
   dispose(): void {
-    this.setMesh({ parts: [], quads: 0, bounds: null });
+    this.setMesh({ parts: [], faces: 0, bounds: null });
     const { gl } = this;
     if (this.grid) deleteVertexArray(gl, this.grid.vao, [this.grid.buffer]);
     if (this.plane) deleteVertexArray(gl, this.plane.vao, [this.plane.buffer]);

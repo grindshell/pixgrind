@@ -19,7 +19,7 @@ export interface PixelClip extends Mask {
   /** Palette indices, row-major over `rect`, transparent outside the mask. */
   pixels: Uint8Array;
   /** The pixels' extrusions, parallel to `pixels`. Absent (e.g. for images from other apps): all default. */
-  extrusion?: Uint16Array;
+  extrusion?: Uint32Array;
   /** The palette's colors when copied, so a paste keeps the look even if the palette has changed since. */
   colors: readonly Rgba[];
 }

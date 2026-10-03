@@ -24,7 +24,7 @@ export interface PixelEdit {
   before: Uint8Array;
   after: Uint8Array;
   /** Extrusions before and after, parallel to `offsets`. Absent when the edit changes none. */
-  extrusion?: { before: Uint16Array; after: Uint16Array };
+  extrusion?: { before: Uint32Array; after: Uint32Array };
 }
 
 /*
@@ -246,8 +246,8 @@ export function pixelEditFromCells(layer: Layer, label: string, cells: ReadonlyM
   };
   if (changed.some(([offset, , extrusion]) => layer.extrusion[offset] !== extrusion)) {
     edit.extrusion = {
-      before: Uint16Array.from(changed, ([offset]) => layer.extrusion[offset]),
-      after: Uint16Array.from(changed, ([, , extrusion]) => extrusion),
+      before: Uint32Array.from(changed, ([offset]) => layer.extrusion[offset]),
+      after: Uint32Array.from(changed, ([, , extrusion]) => extrusion),
     };
   }
   return edit;
@@ -263,7 +263,7 @@ export function pixelEditFromArray(
   layer: Layer,
   label: string,
   after: Uint8Array,
-  afterExtrusion: Uint16Array = layer.extrusion,
+  afterExtrusion: Uint32Array = layer.extrusion,
 ): PixelEdit | null {
   if (after.length !== layer.pixels.length || afterExtrusion.length !== layer.pixels.length) {
     throw new RangeError('Pixel array does not match the layer');
@@ -274,7 +274,7 @@ export function pixelEditFromArray(
 /** A layer's worth of indices and extrusions. */
 interface PixelState {
   pixels: Uint8Array;
-  extrusion: Uint16Array;
+  extrusion: Uint32Array;
 }
 
 /**
@@ -310,7 +310,7 @@ function diffPixels(
     before: new Uint8Array(count),
     after: new Uint8Array(count),
   };
-  const extrusion = extruded ? { before: new Uint16Array(count), after: new Uint16Array(count) } : undefined;
+  const extrusion = extruded ? { before: new Uint32Array(count), after: new Uint32Array(count) } : undefined;
   if (extrusion) edit.extrusion = extrusion;
   for (let i = start, k = 0; i < end; i++) {
     if (!differs(i)) continue;
@@ -450,8 +450,11 @@ export interface PixelEditSession {
   readonly layer: Layer;
   /** Same contract as {@link setPixel}, but remembers each pixel's original value. */
   setPixel(x: number, y: number, index: number): boolean;
-  /** Sets the extrusion of a painted pixel; transparent ones are left alone. Returns whether it changed. */
-  setExtrusion(x: number, y: number, extrusion: Extrusion): boolean;
+  /**
+   * Sets the extrusion of a painted pixel to `update(its extrusion)`;
+   * transparent ones are left alone. Returns whether it changed.
+   */
+  updateExtrusion(x: number, y: number, update: (extrusion: Extrusion) => Extrusion): boolean;
   /** Sets a pixel's index and extrusion together (see `setCellAt`). Returns whether it changed. */
   setCell(x: number, y: number, cell: Cell): boolean;
   /**
@@ -459,7 +462,7 @@ export interface PixelEditSession {
    * ones' extrusions to `extrusion` when given, as `setCell` would one by
    * one, only faster. For whole-layer previews (moving a layer).
    */
-  setAll(pixels: Uint8Array, extrusion?: Uint16Array): void;
+  setAll(pixels: Uint8Array, extrusion?: Uint32Array): void;
   /** Restores every pixel written so far to its original value. Used to redraw shape previews. */
   revert(): void;
   /**
@@ -501,9 +504,11 @@ export function beginPixelEdit(doc: PixelDocument, layer: Layer, label: string, 
       return true;
     },
 
-    setExtrusion(x, y, extrusion) {
+    updateExtrusion(x, y, update) {
       const offset = writable(x, y);
-      if (offset < 0 || layer.pixels[offset] === TRANSPARENT || layer.extrusion[offset] === extrusion) return false;
+      if (offset < 0 || layer.pixels[offset] === TRANSPARENT) return false;
+      const extrusion = update(layer.extrusion[offset]);
+      if (layer.extrusion[offset] === extrusion) return false;
       layer.extrusion[offset] = extrusion;
       wrote(offset);
       return true;

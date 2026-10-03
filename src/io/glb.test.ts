@@ -83,7 +83,7 @@ describe('meshToGlb', () => {
   });
 
   it('refuses an empty mesh', () => {
-    expect(() => meshToGlb({ parts: [], quads: 0, bounds: null }, { name: 'x', scale: 1 })).toThrow(/empty/);
+    expect(() => meshToGlb({ parts: [], faces: 0, bounds: null }, { name: 'x', scale: 1 })).toThrow(/empty/);
   });
 
   it('converts sRGB to linear', () => {

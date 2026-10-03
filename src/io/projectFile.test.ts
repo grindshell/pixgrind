@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_EXTRUSION, packExtrusion } from '../core/extrusion.ts';
+import { CUT_BOTTOM_LEFT, CUT_TOP_LEFT, CUT_TOP_RIGHT, DEFAULT_EXTRUSION, packExtrusion } from '../core/extrusion.ts';
 import { createLayer } from '../core/layer.ts';
 import { rectMask } from '../core/mask.ts';
 import { createPalette } from '../core/palette.ts';
@@ -118,11 +118,55 @@ describe('project files', () => {
     expect(loaded.layers[0].extrusion[1]).toBe(DEFAULT_EXTRUSION);
   });
 
-  it('reads version 1 files, which have no extrusions', async () => {
+  it('round-trips shapes apart from boxes, and leaves them out when all are square', async () => {
+    const doc = sampleDoc();
+    doc.layers[0].extrusion[0] = packExtrusion(0, 1, CUT_TOP_RIGHT);
+    doc.layers[0].extrusion[14] = packExtrusion(2, 5, CUT_BOTTOM_LEFT);
+    doc.layers[0].extrusion[3] = packExtrusion(0, 1, CUT_TOP_LEFT); // transparent pixel: not saved
+    const json = JSON.parse(await serializeProject(doc)) as Record<string, unknown>;
+    expect(layersOf(json)[0]).toHaveProperty('shapes');
+    expect(layersOf(json)[1]).not.toHaveProperty('shapes');
+    const { document: loaded } = await parseProject(JSON.stringify(json));
+    expect([0, 3, 14].map((i) => loaded.layers[0].extrusion[i])).toEqual([
+      packExtrusion(0, 1, CUT_TOP_RIGHT),
+      DEFAULT_EXTRUSION,
+      packExtrusion(2, 5, CUT_BOTTOM_LEFT),
+    ]);
+    // Only the shape differs from the default for pixel 0, so boxes are saved for pixel 14 alone.
+    doc.layers[0].extrusion[14] = packExtrusion(0, 1, CUT_BOTTOM_LEFT);
+    expect(layersOf(JSON.parse(await serializeProject(doc)) as Record<string, unknown>)[0]).not.toHaveProperty('extrusion');
+  });
+
+  it('reads version 1 and 2 files, which have no extrusions or shapes', async () => {
     const json = { ...(await sampleJson()), version: 1 };
     const { document: loaded } = await parseProject(JSON.stringify(json));
     expect(loaded.layers[0].pixels[0]).toBe(1);
     expect(loaded.layers[0].extrusion.every((e) => e === DEFAULT_EXTRUSION)).toBe(true);
+
+    const doc = sampleDoc();
+    doc.layers[0].extrusion[0] = packExtrusion(3, 7);
+    const v2 = { ...(JSON.parse(await serializeProject(doc)) as Record<string, unknown>), version: 2 };
+    const { document: fromV2 } = await parseProject(JSON.stringify(v2));
+    expect(fromV2.layers[0].extrusion[0]).toBe(packExtrusion(3, 7));
+  });
+
+  it('rejects shape data that is corrupt, the wrong size, or unknown', async () => {
+    const parse = (json: unknown) => parseProject(JSON.stringify(json));
+    const shaped = async (values: Uint8Array<ArrayBuffer>) => {
+      const json = await sampleJson();
+      layersOf(json)[0].shapes = toBase64(await deflate(values));
+      return json;
+    };
+    const corrupt = await sampleJson();
+    layersOf(corrupt)[0].shapes = 'AAAA';
+    await expect(parse(corrupt)).rejects.toThrow(/layer 1 shape data is corrupted/);
+    await expect(parse(await shaped(new Uint8Array(14)))).rejects.toThrow(/14 shapes for 15 pixels/);
+    // Pixel 0 is painted; pixel 1 isn't, so its shape doesn't matter.
+    const unknown = new Uint8Array(15);
+    unknown[1] = 9;
+    await expect(parse(await shaped(unknown))).resolves.toBeTruthy();
+    unknown[0] = 5;
+    await expect(parse(await shaped(unknown))).rejects.toThrow(/layer 1 has a pixel of unknown shape 5/);
   });
 
   it('recognizes project files by extension', () => {

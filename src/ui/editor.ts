@@ -10,7 +10,7 @@ import {
   type PixelEdit,
   type PixelEditSession,
 } from '../core/edits.ts';
-import { MAX_DEPTH, MAX_OFFSET, MIN_DEPTH } from '../core/extrusion.ts';
+import { MAX_DEPTH, MAX_OFFSET, MIN_DEPTH, type Shape } from '../core/extrusion.ts';
 import { History } from '../core/history.ts';
 import type { Layer } from '../core/layer.ts';
 import type { Mask, SelectionMode } from '../core/mask.ts';
@@ -51,6 +51,9 @@ export interface ExtrudeSettings {
   depth: number;
 }
 
+/** What the Diagonal tool paints: a shape, or `auto` for each pixel's own (see `autoShape`). */
+export type DiagonalChoice = Shape | 'auto';
+
 /**
  * Editor session state: the document plus everything about how it is being
  * edited. All document changes from the UI go through this class so they
@@ -80,6 +83,8 @@ export class Editor {
   reference: ReferenceImage | null = null;
   /** What the Extrude tool and "Apply" paint. Change via `setExtrude`. */
   extrude: ExtrudeSettings = { offset: 0, depth: 2 };
+  /** What the Diagonal tool and its "Apply" paint. Change via `setDiagonal`. */
+  diagonal: DiagonalChoice = 'auto';
   /** The document column the side view shows. Change via `setSliceColumn`. */
   sliceColumn = 0;
   /** Label the active layer's pixels with their depth on the canvas. Change via `setShowDepth`. */
@@ -227,6 +232,12 @@ export class Editor {
     const depth = clampInteger(changes.depth ?? this.extrude.depth, MIN_DEPTH, MAX_DEPTH);
     if (offset === this.extrude.offset && depth === this.extrude.depth) return;
     this.extrude = { offset, depth };
+    this.notify();
+  }
+
+  setDiagonal(choice: DiagonalChoice): void {
+    if (this.diagonal === choice) return;
+    this.diagonal = choice;
     this.notify();
   }
 
@@ -476,7 +487,9 @@ export class Editor {
           brush: this.brushCursor(),
           lasso: this.lasso,
           slice: this.panes.side ? this.sliceColumn : null,
-          depthLabels: this.showDepth ? this.activeLayer : null,
+          // The Diagonal tool shows what it paints.
+          extrusions:
+            this.showDepth || this.tool === 'diagonal' ? { layer: this.activeLayer, depths: this.showDepth } : null,
         },
         { reuseComposite },
       );
