@@ -241,6 +241,7 @@ Follow-ups:
 pnpm install
 pnpm dev             # dev server (http://localhost:5173)
 pnpm build           # tsc type-check + production build to dist/
+pnpm build:embed     # the same, rooted at /pixgrind/ (see Deployment)
 pnpm preview         # serve the production build
 pnpm test            # vitest run (once)
 pnpm test:watch      # vitest in watch mode
@@ -251,6 +252,18 @@ pnpm add -D <pkg>    # dev dependency
 
 Before calling a task done: `pnpm build` and `pnpm test` pass. For UI changes,
 also check the behavior in a browser (see Verifying in the browser).
+
+## Deployment
+
+- Pixgrind is a Workshop prototype on grindshell.com: the app at
+  `/pixgrind/`, iframe-embedded (same origin) on `/prototypes/pixgrind`.
+  The website repo (`../grindshell/company-website`, runbook in its
+  `PROTOTYPES.md`) runs `build:embed` here and copies `dist/` into its own
+  tree, so keep that script's name. It ships with the website's deploy.
+- `build` stays root-relative for `pnpm preview` and local use.
+- Served under a subpath, so the app must not build root-absolute URLs
+  (`'/…'`). Vite rewrites those in `index.html` only; elsewhere use
+  `import.meta.env.BASE_URL` or a relative path.
 
 ## Stack
 
