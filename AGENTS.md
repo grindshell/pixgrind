@@ -245,12 +245,14 @@ pnpm build:embed     # the same, rooted at /pixgrind/ (see Deployment)
 pnpm preview         # serve the production build
 pnpm test            # vitest run (once)
 pnpm test:watch      # vitest in watch mode
-pnpm typecheck       # tsc only
+pnpm typecheck       # tsc only: the app, then src/cli (tsconfig.cli.json)
+pnpm pixelate --help # batch-pixelate PNGs from the command line (see Pixelating images)
 pnpm add <pkg>       # runtime dependency
 pnpm add -D <pkg>    # dev dependency
 ```
 
-Before calling a task done: `pnpm build` and `pnpm test` pass. For UI changes,
+Before calling a task done: `pnpm typecheck`, `pnpm build` and `pnpm test`
+pass (`build` checks the app only, not `src/cli`). For UI changes,
 also check the behavior in a browser (see Verifying in the browser).
 
 ## Deployment
@@ -316,9 +318,12 @@ src/
                  export), paletteFormats (pure
                  text parsers/serializers), paletteLibrary (saved palettes
                  over a storage interface), imageCodec (decode/encode via
-                 canvas, decodeImageWithin for photos), paletteImage (PNG
+                 canvas, decodeImageWithin for photos), png (pure PNG
+                 decode and indexed encode, for Node), paletteImage (PNG
                  swatches), files (download, file
                  picker, file names and sizes)
+  cli/           Node-only commands: pixelate (the Pixelate pipeline over
+                 PNG files)
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
                  fileCommands (open/save project, open/add/export image,
@@ -343,7 +348,11 @@ public/          static assets served as-is (favicon.svg)
   encode/decode), so formats are unit-tested in Node. `Blob`, `btoa`/`atob`
   and compression streams are fine there: Node has them too. Persistence takes its
   storage as a parameter (`KeyValueStorage`) for the same reason.
-- Dependency direction: `ui` → `render` / `io` → `core`.
+- Dependency direction: `ui` → `render` / `io` → `core`, and `cli` → `io` →
+  `core`. `src/cli` is the one place Node APIs are allowed: the main
+  `tsconfig.json` excludes it, and `tsconfig.cli.json` checks it with Node's
+  types (`@types/node`, a dev dependency). Node runs it as TypeScript
+  directly, so it must stay within erasable syntax like everything else.
 - Tests live next to the code as `*.test.ts` and import from `vitest`
   explicitly (no globals).
 
@@ -1151,6 +1160,24 @@ storage without updating this section and the palette-swap design.
   converted to sRGB as shown (unlike exact imports), and images over 16 MP
   shrunk smoothly first. The preview recomputes through `adaptiveThrottle`
   and once more before applying, so a pending update is never skipped.
+- **Command line** (`src/cli/pixelate.ts`, `pnpm pixelate` or
+  `node src/cli/pixelate.ts`): the same `createPixelator` over PNG files
+  or folders of them, each written as an 8-bit indexed PNG of the same name
+  to `--out` (`io/png.ts`'s `encodeIndexedPng`: entry 0 transparent, then
+  the result's colors). Options mirror the dialog and default to its
+  defaults. It refuses, before writing anything, an `--out` that would
+  replace a source or two inputs sharing a name. Under `pnpm pixelate`,
+  relative paths resolve against the caller's directory (`INIT_CWD`).
+  - Its decode (`decodePng`) is exact; the dialog's is not. Canvases
+    premultiply alpha, so `decodeImageWithin` rounds translucent pixels'
+    colors. Measured 2026-10-05 on 49 AI-generated 1254² RGBA references at
+    64×64, average, 4 generated colors: identical alpha, and Node and the
+    browser give byte-identical results from the same decoded input (49/49),
+    but against the dialog's own decode the palettes differ by at most 1
+    per channel and 96 of 200,704 pixels (0.05%) take another color.
+  - Sources over 64 MP are refused; the dialog instead shrinks those over
+    16 MP first, so results there differ more.
+  - Interlaced PNGs are refused, and other formats aren't read (PNG only).
 - A reference is pixelated by default where it sits: `placedRegion` turns
   its placement into the region under the side being edited, at that side's
   size (scaled when decoding shrank the image), so Add as layer lines up
