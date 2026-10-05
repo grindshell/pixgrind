@@ -1,28 +1,32 @@
 import type { Rgba } from '../core/color.ts';
-import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, type ImageColorMode } from '../core/documentEdits.ts';
+import {
+  addIndexedLayerEdit,
+  importImageLayerEdit,
+  openImageEdit,
+  openIndexedImageEdit,
+  replaceDocumentEdit,
+  type ImageColorMode,
+} from '../core/documentEdits.ts';
 import { planeSize, type Facing } from '../core/facing.ts';
 import { documentImage, flattenImage, upscaleImage } from '../core/image.ts';
 import { buildMesh, buildVoxelModel } from '../core/model.ts';
+import { createPalette, type Palette } from '../core/palette.ts';
+import type { PixelatedImage } from '../core/pixelate.ts';
 import { checkDocumentSize, type PixelDocument } from '../core/pixelDocument.ts';
 import { downloadBlob, fileBaseName, formatFileSize, safeFileName } from '../io/files.ts';
 import { GLB_EXTENSION, meshToGlb } from '../io/glb.ts';
 import { checkExportSize, decodeImage, encodeImage, IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
-import { isProjectFile, parseProject, PROJECT_EXTENSION, serializeProject } from '../io/projectFile.ts';
+import { parseProject, PROJECT_EXTENSION, serializeProject } from '../io/projectFile.ts';
 import type { ReferenceImage } from '../render/referenceImage.ts';
 import { BUSY_MESSAGE } from './commands.ts';
 import type { Editor } from './editor.ts';
 import { referenceFromProject } from './referencePanel.ts';
 
 /*
- * File commands. Each resolves to a status message for the UI and rejects
- * with a user-readable error. They take files rather than opening pickers,
- * so drag-and-drop and tests can call them directly.
+ * File commands. Each returns (or resolves to) a status message for the UI
+ * and throws (or rejects) with a user-readable error. They take files rather
+ * than opening pickers, so drag-and-drop and tests can call them directly.
  */
-
-/** Opens a project file or an image, by file name. */
-export function openFile(editor: Editor, file: File, mode: ImageColorMode): Promise<string> {
-  return isProjectFile(file) ? openProjectFile(editor, file) : openImageFile(editor, file, mode);
-}
 
 /** Replaces the document with an image file (undoable). */
 export async function openImageFile(editor: Editor, file: File, mode: ImageColorMode): Promise<string> {
@@ -73,6 +77,36 @@ export async function openProjectFile(editor: Editor, file: File): Promise<strin
   const parts = [`${width}×${height}×${depth}`, `${layers.length} ${layers.length === 1 ? 'layer' : 'layers'}`];
   if (reference) parts.push('with its reference image');
   return `Opened ${file.name} (${parts.join(', ')}).${note}`;
+}
+
+/**
+ * Replaces the document with a pixelated image (undoable). `palette` is the
+ * palette it was mapped to, or null for its own generated colors.
+ */
+export function openPixelatedImage(editor: Editor, image: PixelatedImage, palette: Palette | null, name: string): string {
+  const edit = openIndexedImageEdit(editor.doc, image, palette ?? createPalette(name, image.colors), name);
+  if (!editor.perform(edit)) throw new Error(BUSY_MESSAGE);
+  const colors = editor.doc.palette.colors.length;
+  return `Opened ${name} pixelated to ${image.width}×${image.height} (${colors} colors).`;
+}
+
+/**
+ * Adds a pixelated image as a layer above the active one, on the side being
+ * edited, adding the colors it uses to the palette (undoable).
+ */
+export function addPixelatedLayer(editor: Editor, image: PixelatedImage, name: string): string {
+  const { doc, facing } = editor;
+  const colorsBefore = doc.palette.colors.length;
+  const { edit, layer } = addIndexedLayerEdit(doc, facing, image, image.colors, name, editor.activeLayerIndex + 1);
+  if (!editor.perform(edit)) throw new Error(BUSY_MESSAGE);
+  editor.selectLayer(layer.id);
+  const parts: string[] = [];
+  if (image.width > layer.width || image.height > layer.height) {
+    parts.push(`cropped to ${Math.min(image.width, layer.width)}×${Math.min(image.height, layer.height)}`);
+  }
+  const added = doc.palette.colors.length - colorsBefore;
+  if (added > 0) parts.push(`${added} ${added === 1 ? 'color' : 'colors'} added to the palette`);
+  return `Added ${name} as a layer${parts.length > 0 ? ` (${parts.join(', ')})` : ''}.`;
 }
 
 export interface SaveOptions {

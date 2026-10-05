@@ -4,11 +4,20 @@ import {
   fitPlacement,
   MAX_REFERENCE_SCALE,
   MIN_REFERENCE_SCALE,
+  placedRegion,
   placementCenter,
   scaleAround,
   scaleToSlider,
   sliderToScale,
 } from './referencePlacement.ts';
+
+describe('placedRegion', () => {
+  it('is the part of the image under the document, in image pixels', () => {
+    // A 640×320 image fitted to 32×32: the document reaches 160 image pixels above and below it.
+    expect(placedRegion(fitPlacement(640, 320, 32, 32), 32, 32)).toEqual({ x: 0, y: -160, width: 640, height: 640 });
+    expect(placedRegion({ x: 4, y: -2, scale: 2 }, 10, 6)).toEqual({ x: -2, y: 1, width: 5, height: 3 });
+  });
+});
 
 describe('fitPlacement', () => {
   it('shrinks a large image to fit and centers it', () => {

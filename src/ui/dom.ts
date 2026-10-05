@@ -118,6 +118,11 @@ export function isTextEntry(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement && !NON_TEXT_INPUTS.has(target.type);
 }
 
+/** Whether a modal dialog is open. It has the keyboard and clipboard to itself. */
+export function modalOpen(): boolean {
+  return document.querySelector('dialog:modal') !== null;
+}
+
 /**
  * Takes focus from a text field so its change handlers commit what was typed
  * (a layer name, a hex color) now. Pointer gestures call this before they

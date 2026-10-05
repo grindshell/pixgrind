@@ -1,9 +1,11 @@
-import { documentState, type DocumentEdit, type LayerAddEdit } from './edits.ts';
+import type { Rgba } from './color.ts';
+import { combineEdits, documentState, type DocumentEdit, type Edit, type LayerAddEdit } from './edits.ts';
 import { extrusionEnd, extrusionOffset, fitExtrusion, withBox } from './extrusion.ts';
 import { planeSize, type Facing } from './facing.ts';
-import { indexImageColors, indexImageToPalette, type RgbaImage } from './image.ts';
+import { indexImageColors, indexImageToPalette, type IndexedImage, type RgbaImage } from './image.ts';
 import { createLayer, type Layer } from './layer.ts';
-import { clonePalette, createPalette, TRANSPARENT } from './palette.ts';
+import { createPalette, MAX_PALETTE_COLORS, TRANSPARENT, type Palette } from './palette.ts';
+import { paletteEdit } from './paletteEdits.ts';
 import { checkDocumentSize, createDocument, type PixelDocument } from './pixelDocument.ts';
 
 /** How an opened image's colors become palette indices. */
@@ -21,12 +23,23 @@ export type ImageColorMode =
 export function openImageEdit(doc: PixelDocument, image: RgbaImage, name: string, mode: ImageColorMode): DocumentEdit {
   // Before counting colors: a photo that's too large shouldn't be reported as having too many.
   checkDocumentSize(image.width, image.height);
-  const indexed = mode === 'image' ? indexImageColors(image.data) : null;
-  // A fully transparent image has no colors of its own; keep the current palette then.
-  const palette =
-    indexed && indexed.colors.length > 0 ? createPalette(name, indexed.colors) : clonePalette(doc.palette);
-  const next = createDocument(image.width, image.height, palette, name);
-  next.layers[0].pixels.set(indexed ? indexed.pixels : indexImageToPalette(image.data, doc.palette));
+  const { width, height } = image;
+  if (mode === 'palette') {
+    return openIndexedImageEdit(doc, { width, height, pixels: indexImageToPalette(image.data, doc.palette) }, doc.palette, name);
+  }
+  const { colors, pixels } = indexImageColors(image.data);
+  return openIndexedImageEdit(doc, { width, height, pixels }, createPalette(name, colors), name);
+}
+
+/**
+ * Replaces the document with an indexed image (e.g. a pixelated photo) and
+ * its palette, as `openImageEdit` does. A palette with no colors (an image
+ * with nothing visible) keeps the current palette instead.
+ */
+export function openIndexedImageEdit(doc: PixelDocument, image: IndexedImage, palette: Palette, name: string): DocumentEdit {
+  checkDocumentSize(image.width, image.height);
+  const next = createDocument(image.width, image.height, palette.colors.length > 0 ? palette : doc.palette, name);
+  next.layers[0].pixels.set(image.pixels);
   return replaceDocumentEdit(doc, next, 'Open image');
 }
 
@@ -47,11 +60,8 @@ export function importImageLayerEdit(
   name: string,
   index: number,
 ): LayerAddEdit {
-  if (!Number.isInteger(index) || index < 0 || index > doc.layers.length) {
-    throw new RangeError(`Invalid layer position ${index}`);
-  }
+  checkLayerPosition(doc, index);
   const plane = planeSize(doc, facing);
-  const layer = createLayer(plane.width, plane.height, name, facing);
   const width = Math.min(image.width, plane.width);
   const height = Math.min(image.height, plane.height);
   // Crop before matching colors: a photo can be far bigger than the side.
@@ -60,9 +70,71 @@ export function importImageLayerEdit(
     const row = y * image.width * 4;
     cropped.set(image.data.subarray(row, row + width * 4), y * width * 4);
   }
-  const indices = indexImageToPalette(cropped, doc.palette);
-  for (let y = 0; y < height; y++) layer.pixels.set(indices.subarray(y * width, (y + 1) * width), y * plane.width);
+  const layer = layerWithImage(doc, facing, name, { width, height, pixels: indexImageToPalette(cropped, doc.palette) });
   return { kind: 'layer-add', label: 'Add image as layer', layer, index };
+}
+
+/**
+ * Adds an indexed image as a new layer on `facing` at `index`, placed at the
+ * top-left and cropped to the facing's plane. Its colors (`colors[i]` is
+ * index `i + 1`) stay exact: each pixel takes the first palette color equal
+ * to its own, and the colors the palette lacks are added to it in the same
+ * edit. Throws a RangeError when that would make the palette too large.
+ */
+export function addIndexedLayerEdit(
+  doc: PixelDocument,
+  facing: Facing,
+  image: IndexedImage,
+  colors: readonly Rgba[],
+  name: string,
+  index: number,
+): { edit: Edit; layer: Layer } {
+  checkLayerPosition(doc, index);
+  const plane = planeSize(doc, facing);
+  const width = Math.min(image.width, plane.width);
+  const height = Math.min(image.height, plane.height);
+  const cropped = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) cropped.set(image.pixels.subarray(y * image.width, y * image.width + width), y * width);
+
+  // Only the colors left after cropping need a place in the palette.
+  const used = new Uint8Array(256);
+  for (let i = 0; i < cropped.length; i++) used[cropped[i]] = 1;
+  const paletteColors = [...doc.palette.colors];
+  const mapping = new Uint8Array(256);
+  for (let i = 1; i < 256; i++) {
+    if (!used[i] || i > colors.length) continue;
+    let at = paletteColors.indexOf(colors[i - 1]);
+    if (at < 0) at = paletteColors.push(colors[i - 1]) - 1;
+    mapping[i] = at + 1;
+  }
+  if (paletteColors.length > MAX_PALETTE_COLORS) {
+    const added = paletteColors.length - doc.palette.colors.length;
+    throw new RangeError(
+      `The image needs ${added} more palette colors, ${paletteColors.length} in all; a palette holds at most ${MAX_PALETTE_COLORS}`,
+    );
+  }
+
+  const label = 'Add image as layer';
+  const layer = layerWithImage(doc, facing, name, { width, height, pixels: cropped.map((i) => mapping[i]) });
+  const palette = paletteEdit(doc, createPalette(doc.palette.name, paletteColors), label);
+  const add: LayerAddEdit = { kind: 'layer-add', label, layer, index };
+  return { edit: combineEdits(label, [palette, add]) ?? add, layer };
+}
+
+function checkLayerPosition(doc: PixelDocument, index: number): void {
+  if (!Number.isInteger(index) || index < 0 || index > doc.layers.length) {
+    throw new RangeError(`Invalid layer position ${index}`);
+  }
+}
+
+/** A new layer on `facing` with an image no larger than the facing's plane at its top-left. */
+function layerWithImage(doc: PixelDocument, facing: Facing, name: string, image: IndexedImage): Layer {
+  const plane = planeSize(doc, facing);
+  const layer = createLayer(plane.width, plane.height, name, facing);
+  for (let y = 0; y < image.height; y++) {
+    layer.pixels.set(image.pixels.subarray(y * image.width, (y + 1) * image.width), y * plane.width);
+  }
+  return layer;
 }
 
 /**

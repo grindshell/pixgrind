@@ -12,6 +12,13 @@ export interface RgbaImage {
   data: Uint8ClampedArray;
 }
 
+/** Palette indices, row-major, as in a layer: 0 is transparent and `i` is the palette's color `i - 1`. */
+export interface IndexedImage {
+  width: number;
+  height: number;
+  pixels: Uint8Array;
+}
+
 /* ---- Import: RGBA → palette indices ---- */
 
 /**

@@ -45,6 +45,43 @@ export async function decodeImage(file: Blob, checkSize?: (width: number, height
 }
 
 /**
+ * Decodes an image file to RGBA for resampling (e.g. a photo to pixelate):
+ * converted to sRGB as browsers show it, rather than exact, and first shrunk
+ * smoothly to at most `maxPixels` pixels when it's larger. Also resolves to
+ * its size as stored.
+ */
+export async function decodeImageWithin(
+  file: Blob,
+  maxPixels: number,
+): Promise<{ image: RgbaImage; width: number; height: number }> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error('The file is not an image this browser can read');
+  }
+  const { width, height } = bitmap;
+  try {
+    if (width * height > maxPixels) {
+      const scale = Math.sqrt(maxPixels / (width * height));
+      const smaller = await createImageBitmap(bitmap, {
+        resizeWidth: Math.max(1, Math.floor(width * scale)),
+        resizeHeight: Math.max(1, Math.floor(height * scale)),
+        resizeQuality: 'high',
+      });
+      bitmap.close();
+      bitmap = smaller;
+    }
+    const ctx = createContext(bitmap.width, bitmap.height, true);
+    ctx.drawImage(bitmap, 0, 0);
+    const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    return { image: { width: bitmap.width, height: bitmap.height, data }, width, height };
+  } finally {
+    bitmap.close();
+  }
+}
+
+/**
  * Encodes RGBA to an image file. Lossy formats use maximum quality (Chrome
  * encodes WebP losslessly at quality 1). Rejects when the browser silently
  * falls back to another format, as Safari does for WebP.

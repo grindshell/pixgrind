@@ -11,7 +11,7 @@ import {
 import type { RgbaImage } from '../core/image.ts';
 import { decodeImage, encodeImage } from '../io/imageCodec.ts';
 import { BUSY_MESSAGE } from './commands.ts';
-import { isTextEntry } from './dom.ts';
+import { isTextEntry, modalOpen } from './dom.ts';
 import type { Editor } from './editor.ts';
 
 /**
@@ -38,8 +38,8 @@ export function attachClipboard(target: Document, editor: Editor, report: (messa
   /** Set when a `paste` event arrives, so the Ctrl+V fallback knows not to paste again. */
   let pasteEventSeen = false;
 
-  /** Whether to act: not in text fields (which keep their own clipboard), and not mid-gesture. */
-  const handles = (e: Event) => !isTextEntry(e.target) && !editor.busy;
+  /** Whether to act: not in text fields (which keep their own clipboard), dialogs, or mid-gesture. */
+  const handles = (e: Event) => !isTextEntry(e.target) && !modalOpen() && !editor.busy;
 
   const store = (copied: PixelClip) => {
     clip = copied;

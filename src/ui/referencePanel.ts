@@ -10,6 +10,7 @@ import type { ProjectReference } from '../io/projectFile.ts';
 import type { ReferenceImage, ReferenceSettings } from '../render/referenceImage.ts';
 import { checkbox, el, fieldRow, iconButton, slider, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
+import type { PixelateDialog } from './pixelateDialog.ts';
 import type { ToolId } from './tools.ts';
 
 const IMAGE_ACCEPT = 'image/*';
@@ -59,7 +60,7 @@ async function decodeReference(file: Blob): Promise<ImageBitmap> {
  * smoothing, opacity, scale, fit, and a Move mode for dragging it on the
  * canvas (wheel scales it there).
  */
-export function createReferencePanel(editor: Editor): HTMLElement {
+export function createReferencePanel(editor: Editor, pixelate: PixelateDialog): HTMLElement {
   const panel = el('section', 'panel');
   const heading = el('h2', 'panel-title');
   heading.textContent = 'Reference';
@@ -82,6 +83,18 @@ export function createReferencePanel(editor: Editor): HTMLElement {
     editor.setReference(null);
     status.textContent = '';
   });
+
+  const pixelateButton = textButton('Pixelate…', () => {
+    const ref = editor.reference;
+    if (!ref) return;
+    pixelate
+      .open(ref.source, ref.name, { placement: { x: ref.x, y: ref.y, scale: ref.scale } })
+      .then(
+        (message) => message !== null && (status.textContent = message),
+        (error: unknown) => (status.textContent = error instanceof Error ? error.message : String(error)),
+      );
+  });
+  pixelateButton.title = 'Turn the reference into pixel art, where it is on the canvas or whole';
 
   /** Tool to return to when Move mode ends. */
   let toolBeforeMove: ToolId = 'pencil';
@@ -121,6 +134,7 @@ export function createReferencePanel(editor: Editor): HTMLElement {
   const controls: Array<HTMLInputElement | HTMLButtonElement> = [
     removeButton,
     moveButton,
+    pixelateButton,
     show.input,
     above.input,
     smooth.input,
@@ -158,6 +172,7 @@ export function createReferencePanel(editor: Editor): HTMLElement {
     toggles,
     opacity.row,
     scale.row,
+    fieldRow(pixelateButton),
     status,
   );
   return panel;

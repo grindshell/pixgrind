@@ -18,6 +18,9 @@ Core features:
   trace over. References are never part of the artwork.
 - **Import/export** of common image formats (PNG, JPG, WebP, …) plus a native
   project format that preserves layers and palette.
+- **Pixelating** images: turn a high-resolution image (a photo, say) into
+  pixel art, a small grid in a limited palette, as a new document or a
+  layer.
 - **3D models** from the pixel art: pixel art can be drawn on any of the six
   sides of the model (front, back, left, right, top, bottom), and each pixel
   extruded into a box that grows from the far side toward the camera looking
@@ -101,6 +104,9 @@ Built so far:
   - Unsaved changes show as `•` in the window title, and production builds
     ask before closing the tab.
   - Add an image as a layer (on the side being edited).
+  - Pixelate image… (or open/drop an image with the "Pixelate" color mode)
+    opens the Pixelate dialog (see Pixelating images). Images too large or
+    with too many colors to open as they are open it too, saying why.
   - Export PNG/JPEG/WebP at 1–16× (the side being edited; file names get
     `-<side>` for all but the front).
 - Reference panel: load an image of any size as a tracing guide, fitted to
@@ -108,7 +114,22 @@ Built so far:
   - Show/hide, above/below the artwork, smoothing, opacity, scale (with
     Fit), and remove.
   - Move mode: drag to position it and wheel to scale it around the pointer.
+  - Pixelate…: the Pixelate dialog for the reference, by default where it
+    sits on the canvas, at the canvas's size, so the result lines up as a
+    layer.
   - Never part of pixel data or exports, and not undoable.
+- Pixelate dialog: a live preview beside the original, and:
+  - Size: width and height (up to the image's size and 1024), keep
+    proportions, a size slider for the longer side, Fit side.
+  - Sampling: average (in linear light), dominant palette color, or center
+    pixel.
+  - Colors: generated from the image (2–255, median cut + k-means), the
+    current palette, a built-in or a saved one.
+  - Dithering: none, ordered (Bayer 8×8) or error diffusion
+    (Floyd–Steinberg), with a strength.
+  - Open as new image, or Add as layer (on the side being edited, its colors
+    added to the palette). Both undoable. Settings are remembered for the
+    session.
 - Undo/redo: per-stroke pixel diffs, Undo/Redo buttons, Ctrl/Cmd+Z,
   Ctrl+Shift+Z and Ctrl+Y. Undoing or redoing a change on another side of
   the model switches the canvas there.
@@ -173,6 +194,14 @@ Follow-ups:
   - The reference image is shared by every side; one per side would let
     each trace its own view.
   - Layer opacity in 3D (today only visibility counts).
+- Pixelating:
+  - Runs on the main thread. Fine for previews (tens of ms; ~100 ms at
+    1024 px and 255 colors from a 2 MP image), but a worker would keep huge
+    images smooth.
+  - Cropping in the dialog (today: whole image, or a reference where it's
+    placed).
+  - Adjustments before quantizing (contrast, saturation, brightness), an
+    outline pass, and saving a generated palette straight to the library.
 - Files:
   - Save in place with the File System Access API where available (today
     every save is a new download).
@@ -256,7 +285,10 @@ src/
                  strokes), clipboard (copy/cut/paste clips), rect (Rect
                  geometry), mask (pixel sets: selection shapes, lasso,
                  combining, outlines), floodFill (+ colorRegion), image (RGBA
-                 ↔ indices, upscale, flatten), extrusion (packed extrusions
+                 ↔ indices, upscale, flatten), resample (average, dominant
+                 and center-pixel downsampling, of a region), quantize
+                 (generated palettes, nearest-color matching, dithering),
+                 pixelate (the pipeline), extrusion (packed extrusions
                  and shapes, cells, side view cell edits, autoShape), model
                  (voxel runs by quarter, views and slices, mesh), meshWeld
                  (manifold welding for watertight export),
@@ -271,12 +303,14 @@ src/
                  export), paletteFormats (pure
                  text parsers/serializers), paletteLibrary (saved palettes
                  over a storage interface), imageCodec (decode/encode via
-                 canvas), paletteImage (PNG swatches), files (download, file
+                 canvas, decodeImageWithin for photos), paletteImage (PNG
+                 swatches), files (download, file
                  picker, file names and sizes)
   ui/            Editor state + mounting, canvas input, tools + tool strip,
                  commands (non-pointer actions like select all, nudge),
                  fileCommands (open/save project, open/add/export image,
-                 export model), keyboard shortcuts, clipboard
+                 export model, apply pixelated images), pixelateDialog,
+                 keyboard shortcuts, clipboard
                  (copy/cut/paste events and the system clipboard), brush and
                  selection panels, history controls, file panel, palette and
                  palettes (library) panels, layers panel, reference panel (+
@@ -1056,6 +1090,66 @@ storage without updating this section and the palette-swap design.
 - Not built yet: export of the selection only, a "new document / canvas size"
   dialog, GIF/animated formats.
 
+### Pixelating images
+
+- The pipeline is pure (`core/pixelate.ts`), in three steps:
+  1. Resample (`core/resample.ts`) to the size.
+  2. Choose colors: given, or generated (`generatePalette`).
+  3. Map to them (`quantizeImage`), maybe dithered.
+- Resampling: each output pixel covers a cell of the source, usually
+  fractional; edge pixels count by how much of them the cell covers
+  (`axisCover`). The cells can span a `SourceRegion` instead of the whole
+  image, reaching past it, where it's transparent.
+  - `average`: alpha-weighted, in linear light (exact round trip for flat
+    areas, through a 65536-step table back to sRGB).
+  - `nearest`: the pixel at the cell's center. Recovers enlarged pixel art.
+  - `dominant`: the palette index covering most of the cell, voted with
+    source pixels (transparency and what's off the image vote for 0). It
+    needs the colors first, so generated colors come from the averaged
+    image. Never dithered.
+- Alpha: pixels below `ALPHA_THRESHOLD` (128) become transparent; the rest
+  are matched as opaque.
+- `generatePalette`: median cut over the opaque colors, splitting the box
+  with the most weighted squared error at its weighted median, then k-means
+  rounds (redmean distance, as `colorDistance`). It works on exact colors up
+  to 8192 distinct, else on 5-bit-per-channel groups at their averages, and
+  caps k-means work so previews stay quick. Deterministic, opaque, sorted
+  dark to light, fewer colors when the image has fewer.
+- `colorMatcher`: nearest color as `nearestColorIndex` would pick it (tests
+  check they agree), caching answers in a 16 MB table per palette. Reuse
+  one per palette.
+- Dithering: `ordered` nudges all three channels by the Bayer 8×8 threshold
+  times `paletteSpread` (the average gap to each color's nearest neighbor,
+  per channel) times the strength. `diffusion` is serpentine
+  Floyd–Steinberg in sRGB, with error scaled by the strength; transparent
+  pixels neither take nor pass on error.
+- `createPixelator(source)` keeps each step's last result keyed on its
+  inputs, so the dialog's live preview redoes only what an option change
+  affects. Generated colors are cut to those used (`usedColorsOnly`); given
+  palettes stay whole.
+- Applying (`ui/fileCommands.ts`):
+  - `openPixelatedImage`: `openIndexedImageEdit` with the chosen palette, or
+    the generated colors named after the image.
+  - `addPixelatedLayer`: `addIndexedLayerEdit` keeps colors exact. Each used
+    color takes the first equal palette color or is appended, in one batch
+    with the layer-add, and more than 255 colors is refused. Placed at the
+    top-left, cropped to the side, like Add as layer.
+- The dialog (`ui/pixelateDialog.ts`) decodes with `decodeImageWithin`:
+  converted to sRGB as shown (unlike exact imports), and images over 16 MP
+  shrunk smoothly first. The preview recomputes through `adaptiveThrottle`
+  and once more before applying, so a pending update is never skipped.
+- A reference is pixelated by default where it sits: `placedRegion` turns
+  its placement into the region under the side being edited, at that side's
+  size (scaled when decoding shrank the image), so Add as layer lines up
+  with it.
+- Modal dialogs own the keyboard and clipboard: shortcuts and clipboard
+  handlers check `modalOpen()`. Ctrl+O/S are still swallowed so the
+  browser's pages don't open.
+- The dialog resolves `open` when it closes itself (`end`). It doesn't wait
+  for the `close` event, which browsers fire only at the next rendered frame
+  (never while the window is occluded). A late `close` is ignored while the
+  dialog is open again.
+
 ### Project files
 
 - `.pixgrind` is pretty-printed JSON (`io/projectFile.ts`):
@@ -1151,6 +1245,12 @@ storage without updating this section and the palette-swap design.
     stub `HTMLInputElement.prototype.click` to check that Ctrl+O opens a
     picker. Test opening projects by dropping a `File` named `*.pixgrind`
     on `.stage`.
+  - Test the Pixelate dialog by dropping an image `File` on `.stage` (one
+    over 1024px opens it in any color mode), then driving the controls in
+    `dialog.pixelate-dialog` (selects have aria-labels Sampling, Palette and
+    Dithering; inputs Width, Height). Time the pipeline with
+    `createPixelator` directly. Screenshots of the dialog work only while
+    the window is visible.
   - Test GLB export the same way (stub `HTMLAnchorElement.prototype.click`,
     click Export GLB, fetch the blob URL), or call `renderModelExport`.
     Core and `io/` modules run in plain Node 24 (type stripping), e.g. a

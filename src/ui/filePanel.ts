@@ -1,11 +1,12 @@
 import { parseHex } from '../core/color.ts';
 import type { ImageColorMode } from '../core/documentEdits.ts';
-import { chooseFile } from '../io/files.ts';
+import { chooseFile, fileBaseName } from '../io/files.ts';
 import { IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
 import { isProjectFile, PROJECT_EXTENSION } from '../io/projectFile.ts';
 import { checkbox, el, fieldRow, option, textButton } from './dom.ts';
 import type { Editor } from './editor.ts';
-import { addImageLayer, exportImage, openFile, saveProject } from './fileCommands.ts';
+import { addImageLayer, exportImage, openImageFile, openProjectFile, saveProject } from './fileCommands.ts';
+import type { PixelateDialog } from './pixelateDialog.ts';
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/bmp';
 const OPEN_ACCEPT = `.${PROJECT_EXTENSION},${IMAGE_ACCEPT}`;
@@ -26,28 +27,48 @@ export interface FilePanel {
  * Open a project or an image, add an image as a layer, save the project, and
  * export the visible layers. Files dropped on `dropTarget` are opened too.
  */
-export function createFilePanel(editor: Editor, dropTarget: HTMLElement): FilePanel {
+export function createFilePanel(editor: Editor, dropTarget: HTMLElement, pixelate: PixelateDialog): FilePanel {
   const panel = el('section', 'panel');
   const heading = el('h2', 'panel-title');
   heading.textContent = 'File';
 
   const status = el('p', 'panel-status');
   status.setAttribute('role', 'status');
-  const run = (task: Promise<string>) =>
+  /** Shows how a command went. Those resolving to null (a cancelled dialog) leave the status as it was. */
+  const run = (task: Promise<string | null>) =>
     task.then(
-      (message) => (status.textContent = message),
+      (message) => message !== null && (status.textContent = message),
       (error: unknown) => (status.textContent = error instanceof Error ? error.message : String(error)),
     );
 
   const colorMode = el('select', 'select');
   colorMode.setAttribute('aria-label', 'Colors when opening an image');
-  colorMode.append(option('image', "Use the image's colors"), option('palette', 'Match current palette'));
+  colorMode.append(
+    option('image', "Use the image's colors"),
+    option('palette', 'Match current palette'),
+    option('pixelate', 'Pixelate (choose size and colors)'),
+  );
   colorMode.title =
-    "How an opened image becomes indexed colors.\nUse the image's colors: exact, up to 255 colors.\nMatch current palette: each pixel takes the nearest palette color.";
-  const openMode = () => colorMode.value as ImageColorMode;
+    "How an opened image becomes indexed colors.\nUse the image's colors: exact, up to 255 colors.\nMatch current palette: each pixel takes the nearest palette color.\nPixelate: shrink it and reduce its colors first, e.g. for a photo.";
+
+  const pixelateFile = (file: File, note?: string) => pixelate.open(file, fileBaseName(file.name), { note });
+  /** Opens a project or image the way the color mode says. Images too large or colorful to open as they are get pixelated. */
+  const openChosen = (file: File) => {
+    const mode = colorMode.value;
+    if (isProjectFile(file)) return run(openProjectFile(editor, file));
+    if (mode === 'pixelate') return run(pixelateFile(file));
+    return run(
+      openImageFile(editor, file, mode as ImageColorMode).catch((error: unknown) => {
+        // Too large, or too many colors.
+        if (!(error instanceof RangeError)) throw error;
+        const reason = error.message.charAt(0).toLowerCase() + error.message.slice(1);
+        return pixelateFile(file, `${file.name} can't be opened as it is: ${reason}. Pixelate it to make it fit.`);
+      }),
+    );
+  };
 
   const open = () => {
-    void chooseFile(OPEN_ACCEPT).then((file) => file && run(openFile(editor, file, openMode())));
+    void chooseFile(OPEN_ACCEPT).then((file) => file && openChosen(file));
   };
   const openButton = textButton('Open…', open);
   openButton.title = 'Open a Pixgrind project or an image (Ctrl+O). You can also drop one on the canvas.';
@@ -55,6 +76,12 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): FilePa
     void chooseFile(IMAGE_ACCEPT).then((file) => file && run(addImageLayer(editor, file)));
   });
   layerButton.title = 'Add an image as a new layer, using the nearest palette colors';
+  const pixelateButton = textButton('Pixelate image…', () => {
+    void chooseFile(IMAGE_ACCEPT).then((file) => file && run(pixelateFile(file)));
+  });
+  pixelateButton.classList.add('is-wide');
+  pixelateButton.title =
+    'Turn an image, such as a photo, into pixel art: choose its size and colors, then open it or add it as a layer';
 
   const includeReference = checkbox('with reference', () => {});
   includeReference.input.checked = true;
@@ -108,12 +135,13 @@ export function createFilePanel(editor: Editor, dropTarget: HTMLElement): FilePa
   editor.onChange(syncReference);
   syncReference();
 
-  attachFileDrop(dropTarget, (file) => void run(openFile(editor, file, openMode())));
+  attachFileDrop(dropTarget, (file) => void openChosen(file));
 
   panel.append(
     heading,
     fieldRow(openButton, layerButton),
     colorMode,
+    pixelateButton,
     fieldRow(saveButton, includeReference.label),
     fieldRow(format, scale, exportButton),
     jpegRow,

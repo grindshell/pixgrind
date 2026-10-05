@@ -1,3 +1,5 @@
+import type { SourceRegion } from './resample.ts';
+
 /**
  * Where a reference image sits over the document, in document pixel
  * coordinates. Fractional values are fine: references are guides, not pixels.
@@ -43,6 +45,20 @@ export function placementCenter(placement: ReferencePlacement, imageWidth: numbe
   return {
     x: placement.x + (imageWidth * placement.scale) / 2,
     y: placement.y + (imageHeight * placement.scale) / 2,
+  };
+}
+
+/**
+ * The part of the image under a `docWidth`×`docHeight` document, in image
+ * pixels (it may reach past the image): what the reference shows on the
+ * canvas, for pixelating it where it is.
+ */
+export function placedRegion(placement: ReferencePlacement, docWidth: number, docHeight: number): SourceRegion {
+  return {
+    x: (0 - placement.x) / placement.scale,
+    y: (0 - placement.y) / placement.scale,
+    width: docWidth / placement.scale,
+    height: docHeight / placement.scale,
   };
 }
 

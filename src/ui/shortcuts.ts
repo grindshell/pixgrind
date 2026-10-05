@@ -1,7 +1,7 @@
 import { stepBrushSize } from '../core/brush.ts';
 import { FACINGS } from '../core/facing.ts';
 import { clearSelection, deselect, dropFloating, invertSelection, nudge, selectAll } from './commands.ts';
-import { isTextEntry, usesArrowKeys } from './dom.ts';
+import { isTextEntry, modalOpen, usesArrowKeys } from './dom.ts';
 import type { Editor } from './editor.ts';
 import { getTool, TOOLS } from './tools.ts';
 
@@ -31,13 +31,13 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
     // Open and save work from text fields too, instead of the browser's own open file/save page.
     if (command && !e.shiftKey && (key === 'o' || key === 's')) {
       e.preventDefault();
-      if (e.repeat) return;
+      if (e.repeat || modalOpen()) return;
       if (key === 'o') files.open();
       else files.save();
       return;
     }
 
-    if (isTextEntry(e.target)) return;
+    if (isTextEntry(e.target) || modalOpen()) return;
 
     if (command) {
       if (key === 'z' && !e.shiftKey) editor.undo();

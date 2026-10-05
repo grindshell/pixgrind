@@ -36,6 +36,7 @@ import { createPerspectiveBar } from './perspectiveBar.ts';
 import { createPaletteLibraryPanel, openPaletteLibrary } from './paletteLibraryPanel.ts';
 import { createBrushPanel } from './brushPanel.ts';
 import { createPalettePanel } from './palettePanel.ts';
+import { createPixelateDialog } from './pixelateDialog.ts';
 import { createReferencePanel } from './referencePanel.ts';
 import { createSelectionPanel } from './selectionPanel.ts';
 import { attachShortcuts } from './shortcuts.ts';
@@ -670,7 +671,9 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   title.textContent = 'Pixgrind';
 
   const editor = new Editor(doc, canvas);
-  const filePanel = createFilePanel(editor, stage);
+  const library = openPaletteLibrary();
+  const pixelate = createPixelateDialog(editor, library.library);
+  const filePanel = createFilePanel(editor, stage, pixelate);
   stage.append(canvas, createPerspectiveBar(editor));
   sidebar.append(
     title,
@@ -679,8 +682,8 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
     createBrushPanel(editor),
     createSelectionPanel(editor),
     createPalettePanel(editor),
-    createPaletteLibraryPanel(editor, openPaletteLibrary()),
-    createReferencePanel(editor),
+    createPaletteLibraryPanel(editor, library),
+    createReferencePanel(editor, pixelate),
     createLayersPanel(editor),
     createModelPanel(editor),
   );
@@ -689,7 +692,7 @@ export function mountEditor(root: HTMLElement, doc: PixelDocument): Editor {
   const workspace = el('div', 'workspace');
   workspace.append(stage, createSidePane(editor), createModelPane(editor));
   layout.append(sidebar, createToolbar(editor), workspace);
-  root.append(layout);
+  root.append(layout, pixelate.element);
   attachCanvasInput(canvas, editor);
   attachShortcuts(window, editor, filePanel);
   attachClipboard(document, editor, filePanel.report);

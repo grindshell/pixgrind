@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { importImageLayerEdit, openImageEdit, replaceDocumentEdit, setDepthEdit } from './documentEdits.ts';
+import {
+  addIndexedLayerEdit,
+  importImageLayerEdit,
+  openImageEdit,
+  openIndexedImageEdit,
+  replaceDocumentEdit,
+  setDepthEdit,
+} from './documentEdits.ts';
 import { applyEdit, documentState, type DocumentEdit } from './edits.ts';
 import { extrusionDepth, extrusionOffset, packExtrusion } from './extrusion.ts';
 import { buildVoxelModel } from './model.ts';
@@ -142,6 +149,65 @@ describe('importImageLayerEdit', () => {
     const edit = importImageLayerEdit(doc, 'left', imageFrom(['rgbrg']), 'side', 0);
     expect([edit.layer.facing, edit.layer.width, edit.layer.height]).toEqual(['left', 4, 2]);
     expect(Array.from(edit.layer.pixels)).toEqual([2, 3, 1, 2, 0, 0, 0, 0]);
+  });
+});
+
+describe('openIndexedImageEdit', () => {
+  it('opens the pixels on the front with their palette, undoably', () => {
+    const doc = existingDoc();
+    const before = documentState(doc);
+    const colors = createPalette('Mine', [0x112233ff, 0x445566ff]);
+    const edit = openIndexedImageEdit(doc, { width: 3, height: 1, pixels: Uint8Array.of(2, 0, 1) }, colors, 'photo');
+    applyEdit(doc, edit, 'redo');
+    expect([doc.name, doc.width, doc.height, doc.depth]).toEqual(['photo', 3, 1, 3]);
+    expect(doc.palette).toEqual(colors);
+    expect(doc.palette).not.toBe(colors);
+    expect(Array.from(doc.layers[0].pixels)).toEqual([2, 0, 1]);
+    applyEdit(doc, edit, 'undo');
+    expect(documentState(doc)).toEqual(before);
+  });
+
+  it('keeps the current palette when given one with no colors', () => {
+    const doc = existingDoc();
+    applyEdit(doc, openIndexedImageEdit(doc, { width: 1, height: 1, pixels: Uint8Array.of(0) }, createPalette('x', []), 'empty'), 'redo');
+    expect(doc.palette.colors).toEqual(palette.colors);
+  });
+});
+
+describe('addIndexedLayerEdit', () => {
+  const RED = 0xff0000ff;
+  const BLUE = 0x0000ffff;
+  const WHITE = 0xffffffff;
+
+  it('reuses palette colors it has and adds the rest, in one undoable edit', () => {
+    const doc = createDocument(3, 2, palette);
+    const before = documentState(doc);
+    const image = { width: 3, height: 1, pixels: Uint8Array.of(1, 2, 3) };
+    const { edit, layer } = addIndexedLayerEdit(doc, 'front', image, [BLUE, RED, WHITE], 'photo', 1);
+    expect(edit.label).toBe('Add image as layer');
+    applyEdit(doc, edit, 'redo');
+    expect(doc.palette.name).toBe('Current');
+    expect(doc.palette.colors).toEqual([...palette.colors, BLUE, WHITE]);
+    expect(doc.layers[1]).toBe(layer);
+    expect(Array.from(layer.pixels)).toEqual([4, 2, 5, 0, 0, 0]);
+    applyEdit(doc, edit, 'undo');
+    expect(documentState(doc)).toEqual(before);
+  });
+
+  it('adds only the colors left after cropping, and no palette change when none are new', () => {
+    const doc = createDocument(2, 1, palette);
+    const image = { width: 3, height: 2, pixels: Uint8Array.of(2, 0, 1, 1, 1, 1) };
+    const { edit, layer } = addIndexedLayerEdit(doc, 'front', image, [BLUE, RED], 'photo', 1);
+    expect(edit.kind).toBe('layer-add');
+    expect(Array.from(layer.pixels)).toEqual([2, 0]);
+  });
+
+  it('refuses images that would overfill the palette', () => {
+    const doc = createDocument(255, 1, palette);
+    const colors = Array.from({ length: 253 }, (_, i) => 0x01000000 * (i + 1) + 0xff);
+    const image = { width: 253, height: 1, pixels: Uint8Array.from(colors, (_, i) => i + 1) };
+    expect(() => addIndexedLayerEdit(doc, 'front', image, colors, 'x', 1)).toThrow(/at most 255/);
+    expect(() => addIndexedLayerEdit(doc, 'front', { ...image, width: 252, pixels: image.pixels.subarray(0, 252) }, colors, 'x', 1)).not.toThrow();
   });
 });
 
