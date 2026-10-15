@@ -129,6 +129,8 @@ export class Editor {
   private documentRevision = 0;
   /** Goes up whenever content may have changed (every `requestRender('content')`), even mid-stroke. */
   private contentChanges = 0;
+  /** `contentChanges` as of the last render, so render listeners hear only of real content changes. */
+  private renderedChanges = -1;
   private modelCache: { version: number; model: VoxelModel } | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly renderListeners = new Set<(contentChanged: boolean) => void>();
@@ -164,6 +166,8 @@ export class Editor {
     if (facing === this.facing || this.busy) return;
     getTool(this.tool).deactivate?.(this);
     this.facing = facing;
+    // The pointer's pixel was on the old side; canvas input reports it again on the next move.
+    this.pointer = null;
     this.sliceColumn = Math.min(this.sliceColumn, this.plane.width - 1);
     this.fitIfResized();
     this.requestRender();
@@ -343,9 +347,10 @@ export class Editor {
   }
 
   /**
-   * Called after each canvas render, with whether document content may have
-   * changed since the last one. Views that follow the canvas (the side and
-   * 3D views) redraw from here. Returns an unsubscribe function.
+   * Called after each canvas render, with whether document content (what
+   * `contentVersion` counts) may have changed since the last one. Views that
+   * follow the canvas (the side and 3D views) redraw from here. Returns an
+   * unsubscribe function.
    */
   onRender(listener: (contentChanged: boolean) => void): () => void {
     this.renderListeners.add(listener);
@@ -427,10 +432,11 @@ export class Editor {
   previewLayerOpacity(layerId: string, opacity: number): void {
     const layer = findLayer(this.doc, layerId);
     if (!layer) return;
-    // A layer at 0% isn't modeled; other opacities don't change the model.
-    if (opacity > 0 !== layer.opacity > 0) this.dropGuide(layer.facing);
+    // A layer at 0% isn't modeled; other opacities change the composite but not the model.
+    const modeled = opacity > 0 !== layer.opacity > 0;
+    if (modeled) this.dropGuide(layer.facing);
     layer.opacity = opacity;
-    this.requestRender();
+    this.requestRender(modeled ? 'content' : 'composite');
   }
 
   /**
@@ -547,19 +553,22 @@ export class Editor {
    * Schedules a redraw on the next animation frame. Safe to call repeatedly.
    * `view` says only the view or overlays changed (zoom, pan, brush outline,
    * selection, lasso, reference), not pixels, palette or layers, so the layer
-   * composite is reused. When in doubt, leave the default.
+   * composite is reused. `composite` says the side's flattened image changed
+   * but nothing the 3D model is built from (a layer's opacity, short of 0),
+   * so views keyed on `contentVersion` keep what they have. When in doubt,
+   * leave the default.
    */
-  requestRender(change: 'content' | 'view' = 'content'): void {
-    if (change === 'content') {
-      this.compositeStale = true;
-      this.contentChanges++;
-    }
+  requestRender(change: 'content' | 'composite' | 'view' = 'content'): void {
+    if (change !== 'view') this.compositeStale = true;
+    if (change === 'content') this.contentChanges++;
     if (this.renderQueued) return;
     this.renderQueued = true;
     requestAnimationFrame(() => {
       this.renderQueued = false;
       const reuseComposite = !this.compositeStale;
       this.compositeStale = false;
+      const contentChanged = this.contentChanges !== this.renderedChanges;
+      this.renderedChanges = this.contentChanges;
       this.renderer.render(
         this.doc,
         this.facing,
@@ -576,7 +585,7 @@ export class Editor {
         },
         { reuseComposite },
       );
-      for (const listener of this.renderListeners) listener(!reuseComposite);
+      for (const listener of this.renderListeners) listener(contentChanged);
     });
   }
 

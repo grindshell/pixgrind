@@ -36,9 +36,14 @@ interface Header {
 /**
  * Decodes a PNG to RGBA. Throws on files that aren't PNGs, are corrupt or
  * interlaced, or have more than `maxPixels` pixels (checked before their
- * pixels take memory).
+ * pixels take memory). `checkSize` sees the size first and can throw its
+ * own, more specific refusal.
  */
-export async function decodePng(bytes: Uint8Array, maxPixels: number): Promise<RgbaImage> {
+export async function decodePng(
+  bytes: Uint8Array,
+  maxPixels: number,
+  checkSize?: (width: number, height: number) => void,
+): Promise<RgbaImage> {
   if (bytes.length < SIGNATURE.length || SIGNATURE.some((b, i) => bytes[i] !== b)) throw new Error('Not a PNG file');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let header: Header | null = null;
@@ -55,7 +60,7 @@ export async function decodePng(bytes: Uint8Array, maxPixels: number): Promise<R
     const data = bytes.subarray(o + 8, end - 4);
     o = end;
     if (type === 'IEND') break;
-    if (type === 'IHDR') header = readHeader(data, maxPixels);
+    if (type === 'IHDR') header = readHeader(data, maxPixels, checkSize);
     else if (!header) throw new Error('The PNG has no header');
     else if (type === 'PLTE') palette = data;
     else if (type === 'tRNS') transparency = data;
@@ -134,7 +139,7 @@ export async function decodePng(bytes: Uint8Array, maxPixels: number): Promise<R
   return { width, height, data };
 }
 
-function readHeader(data: Uint8Array, maxPixels: number): Header {
+function readHeader(data: Uint8Array, maxPixels: number, checkSize?: (width: number, height: number) => void): Header {
   if (data.length !== 13) throw new Error('The PNG header is corrupt');
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const width = view.getUint32(0);
@@ -143,6 +148,7 @@ function readHeader(data: Uint8Array, maxPixels: number): Header {
   if (width < 1 || height < 1 || compression !== 0 || filter !== 0 || interlace > 1) throw new Error('The PNG header is corrupt');
   if (!COLOR_TYPES[colorType]?.depths.includes(depth)) throw new Error(`The PNG has an invalid format (color type ${colorType}, ${depth}-bit)`);
   if (interlace === 1) throw new Error("Interlaced PNGs aren't supported");
+  checkSize?.(width, height);
   if (width * height > maxPixels) throw new RangeError(`${width}×${height} is too large (max ${maxPixels} pixels)`);
   return { width, height, depth, colorType };
 }

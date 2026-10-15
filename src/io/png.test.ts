@@ -122,6 +122,18 @@ describe('decodePng', () => {
     await expect(decodePng(png, 0)).rejects.toThrow('too large');
     await expect(decodePng(await buildPng({ ...rgba, interlace: 1 }), MAX)).rejects.toThrow('Interlaced');
   });
+
+  it('lets checkSize refuse by the header, before the pixel cap', async () => {
+    const png = await buildPng({ width: 3, height: 2, depth: 8, colorType: 6, rows: [[], []].map(() => Array(12).fill(0)), bpp: 4 });
+    const seen: number[][] = [];
+    const check = (width: number, height: number) => {
+      seen.push([width, height]);
+      throw new RangeError('refused by size');
+    };
+    await expect(decodePng(png, 0, check)).rejects.toThrow('refused by size');
+    expect(seen).toEqual([[3, 2]]);
+    expect((await decodePng(png, MAX, () => {})).width).toBe(3);
+  });
 });
 
 describe('encodeIndexedPng', () => {

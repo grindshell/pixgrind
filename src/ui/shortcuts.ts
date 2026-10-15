@@ -102,8 +102,11 @@ export function attachShortcuts(target: Window, editor: Editor, files: FileShort
       return;
     }
 
-    // 1–6 pick the side being edited, in the perspective bar's order.
-    const side = /^[1-6]$/.test(e.key) && !e.shiftKey ? FACINGS[Number(e.key) - 1] : undefined;
+    // 1–6 pick the side being edited, in the perspective bar's order. By the
+    // physical key, since on some layouts (AZERTY) digits take Shift; the
+    // key value covers keyboards without codes, and the numeric keypad.
+    const digit = /^Digit([1-6])$/.exec(e.code)?.[1] ?? (/^[1-6]$/.test(e.key) ? e.key : undefined);
+    const side = digit === undefined ? undefined : FACINGS[Number(digit) - 1];
     if (side) {
       e.preventDefault();
       editor.setFacing(side);

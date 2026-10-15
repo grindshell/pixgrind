@@ -49,7 +49,6 @@ export type Pixelator = (options: PixelateOptions) => PixelatedImage;
 export function createPixelator(source: RgbaImage): Pixelator {
   let sampled: { key: string; image: RgbaImage } | null = null;
   let generated: { key: string; colors: Rgba[] } | null = null;
-  let matcher: { key: string; matcher: ColorMatcher } | null = null;
 
   return (options) => {
     const { width, height, sampling } = options;
@@ -74,9 +73,7 @@ export function createPixelator(source: RgbaImage): Pixelator {
     // Only when no pixel is opaque enough to have a color.
     if (colors.length === 0) return { width, height, colors: [], pixels: new Uint8Array(width * height) };
 
-    const colorsKey = colors.join();
-    if (matcher?.key !== colorsKey) matcher = { key: colorsKey, matcher: colorMatcher(colors) };
-    const match = matcher.matcher;
+    const match = matcherFor(colors);
     const pixels =
       sampling === 'dominant'
         ? dominantResample(
@@ -93,6 +90,19 @@ export function createPixelator(source: RgbaImage): Pixelator {
     const image = { width, height, colors: [...colors], pixels };
     return options.colors ? image : usedColorsOnly(image);
   };
+}
+
+/**
+ * The last matcher made, shared by every pixelator: its 16 MB answer table
+ * is costly to make, and the dialog and the command line usually keep one
+ * palette across images. Only one is kept, so palettes don't pile up.
+ */
+let lastMatcher: { key: string; matcher: ColorMatcher } | null = null;
+
+function matcherFor(colors: readonly Rgba[]): ColorMatcher {
+  const key = colors.join();
+  if (lastMatcher?.key !== key) lastMatcher = { key, matcher: colorMatcher(colors) };
+  return lastMatcher.matcher;
 }
 
 /** Pixelates an image once. For repeated runs on one image, keep a `createPixelator`. */

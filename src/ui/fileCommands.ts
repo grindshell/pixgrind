@@ -12,10 +12,17 @@ import { documentImage, flattenImage, upscaleImage } from '../core/image.ts';
 import { buildMesh, buildVoxelModel } from '../core/model.ts';
 import { createPalette, type Palette } from '../core/palette.ts';
 import type { PixelatedImage } from '../core/pixelate.ts';
-import { checkDocumentSize, type PixelDocument } from '../core/pixelDocument.ts';
+import { checkDocumentSize, layerIndex, type PixelDocument } from '../core/pixelDocument.ts';
 import { downloadBlob, fileBaseName, formatFileSize, safeFileName } from '../io/files.ts';
 import { GLB_EXTENSION, meshToGlb } from '../io/glb.ts';
-import { checkExportSize, decodeImage, encodeImage, IMAGE_FORMATS, type ImageFormat } from '../io/imageCodec.ts';
+import {
+  checkExportSize,
+  decodeImageCropped,
+  decodeImageExact,
+  encodeImage,
+  IMAGE_FORMATS,
+  type ImageFormat,
+} from '../io/imageCodec.ts';
 import { parseProject, PROJECT_EXTENSION, serializeProject } from '../io/projectFile.ts';
 import type { ReferenceImage } from '../render/referenceImage.ts';
 import { BUSY_MESSAGE } from './commands.ts';
@@ -28,9 +35,9 @@ import { referenceFromProject } from './referencePanel.ts';
  * than opening pickers, so drag-and-drop and tests can call them directly.
  */
 
-/** Replaces the document with an image file (undoable). */
+/** Replaces the document with an image file (undoable). PNGs are read exactly (see `decodeImageExact`). */
 export async function openImageFile(editor: Editor, file: File, mode: ImageColorMode): Promise<string> {
-  const image = await decodeImage(file, (width, height) => checkDocumentSize(width, height));
+  const image = await decodeImageExact(file, (width, height) => checkDocumentSize(width, height));
   const name = fileBaseName(file.name);
   if (!editor.perform(openImageEdit(editor.doc, image, name, mode))) throw new Error(BUSY_MESSAGE);
   const colors = editor.doc.palette.colors.length;
@@ -38,22 +45,30 @@ export async function openImageFile(editor: Editor, file: File, mode: ImageColor
   return `Opened ${file.name} (${image.width}×${image.height}, ${how}).`;
 }
 
-/** Adds an image file as a new layer above the active one, on the side being edited, mapped to the current palette (undoable). */
+/**
+ * Adds an image file as a new layer above the active one, on the side being
+ * edited, mapped to the current palette (undoable). Only the part that fits
+ * the side is decoded: a photo can be far larger than any canvas allows.
+ */
 export async function addImageLayer(editor: Editor, file: File): Promise<string> {
-  const image = await decodeImage(file);
+  // As they are now: decoding takes a moment, in which the user may switch sides.
   const { doc, facing } = editor;
-  const edit = importImageLayerEdit(doc, facing, image, fileBaseName(file.name), editor.activeLayerIndex + 1);
+  const activeId = editor.activeLayer.id;
+  const plane = planeSize(doc, facing);
+  const { image, width, height } = await decodeImageCropped(file, plane.width, plane.height);
+  const above = layerIndex(doc, activeId);
+  const edit = importImageLayerEdit(doc, facing, image, fileBaseName(file.name), above < 0 ? doc.layers.length : above + 1);
   if (!editor.perform(edit)) throw new Error(BUSY_MESSAGE);
   editor.selectLayer(edit.layer.id);
-  const { width, height } = edit.layer;
-  const cropped = image.width > width || image.height > height;
-  return `Added ${file.name} as a layer${cropped ? `, cropped to ${width}×${height}` : ''}.`;
+  const cropped = width > edit.layer.width || height > edit.layer.height;
+  return `Added ${file.name} as a layer${cropped ? `, cropped to ${edit.layer.width}×${edit.layer.height}` : ''}.`;
 }
 
 /**
  * Replaces the document with a project file (undoable). A reference image
- * saved in the project replaces the current one; otherwise the current one
- * stays, as when opening an image.
+ * saved in the project replaces the current one (clearing it when the saved
+ * one can't be read, so an unrelated image doesn't show over the new
+ * document); otherwise the current one stays, as when opening an image.
  */
 export async function openProjectFile(editor: Editor, file: File): Promise<string> {
   const project = await parseProject(await file.text());
@@ -72,7 +87,7 @@ export async function openProjectFile(editor: Editor, file: File): Promise<strin
     throw new Error(BUSY_MESSAGE);
   }
   editor.markSaved();
-  if (reference) editor.setReference(reference);
+  if (project.reference) editor.setReference(reference);
   const { width, height, depth, layers } = editor.doc;
   const parts = [`${width}×${height}×${depth}`, `${layers.length} ${layers.length === 1 ? 'layer' : 'layers'}`];
   if (reference) parts.push('with its reference image');

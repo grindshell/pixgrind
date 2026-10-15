@@ -318,9 +318,10 @@ src/
                  export), paletteFormats (pure
                  text parsers/serializers), paletteLibrary (saved palettes
                  over a storage interface), imageCodec (decode/encode via
-                 canvas, decodeImageWithin for photos), png (pure PNG
-                 decode and indexed encode, for Node), paletteImage (PNG
-                 swatches), files (download, file
+                 canvas, decodeImageExact for PNGs, decodeImageCropped for
+                 layers, decodeImageWithin for photos), png (pure PNG
+                 decode and indexed encode, exact in Node and the browser),
+                 paletteImage (PNG swatches), files (download, file
                  picker, file names and sizes)
   cli/           Node-only commands: pixelate (the Pixelate pipeline over
                  PNG files)
@@ -424,8 +425,12 @@ storage without updating this section and the palette-swap design.
   - `.hex` (Lospec), `.gpl` (GIMP) and `.pal` (JASC) are RGB only, so alpha is
     dropped on export, with a warning.
   - PNG swatches (`io/paletteImage.ts`) export one pixel per color (Lospec 1x)
-    and keep alpha. On import they read any image's distinct visible colors
-    in reading order.
+    and keep alpha, written as an indexed PNG with `encodeIndexedPng` and
+    read back with `decodePng`, both pure, so translucent colors round-trip
+    exactly (a canvas premultiplies alpha and rounds them). On import they
+    read any image's distinct visible colors in reading order; images
+    `decodePng` can't read (interlaced, other formats) go through the
+    browser.
   - More than 255 colors is an error, never a silent truncation.
 
 ### Sides (facings)
@@ -556,13 +561,17 @@ storage without updating this section and the palette-swap design.
   - The default, `'content'`, recomposites. Use it for anything that changes
     pixels, the palette, or layer order, visibility or opacity, and when in
     doubt: a missed `'view'` only costs time, a wrong one shows stale pixels.
+  - `'composite'` recomposites too, but says the 3D model is unchanged: a
+    layer's opacity moving without crossing 0 (the live slider preview),
+    which would otherwise rebuild the model and mesh on every tick.
   - Direct `renderer.render()` calls (automation) always recomposite.
   - Every `'content'` request bumps `Editor.contentVersion` (unlike
     `revision`, also mid-stroke and for previews). Views caching what they
     draw key on it.
   - `Editor.onRender(listener)` runs after each canvas render with whether
-    content changed. The side and 3D panes redraw from there, so they follow
-    the canvas without their own subscriptions to every change.
+    `contentVersion` changed since the last one. The side and 3D panes
+    redraw from there, so they follow the canvas without their own
+    subscriptions to every change.
 - `render(doc, facing, viewport, overlays)` draws one side's plane. It
   takes what isn't document data as
   `RenderOverlays`: the reference image, the guide, the brush cursor, the
@@ -1074,10 +1083,16 @@ storage without updating this section and the palette-swap design.
   `File`s rather than opening pickers, so drag-and-drop and tests call them
   directly.
 - Decode: `createImageBitmap` with `colorSpaceConversion: 'none'` and
-  `premultiplyAlpha: 'none'`, so colors come out exactly as stored.
-  `decodeImage`'s `checkSize` sees the size before the pixels are read, so
-  opening and pasting refuse images too large for a document before they
-  take memory.
+  `premultiplyAlpha: 'none'`, so colors come out as stored, except that
+  the canvas they're read through premultiplies alpha and so rounds
+  translucent pixels. Opening an image uses `decodeImageExact`: PNG files
+  go through the pure `decodePng` (exact; interlaced ones fall back to the
+  browser), everything else through `decodeImage`. Its `checkSize` sees the
+  size before the pixels are read, so opening and pasting refuse images too
+  large for a document before they take memory. Add as layer uses
+  `decodeImageCropped`, which reads only the part that fits the side, so a
+  photo of any size works without a canvas its full size (browsers cap
+  canvas sizes, and fail opaquely past them).
 - **Open image** (`openImageEdit`) replaces the whole document through a
   `document` edit (a before/after `DocumentState`), so it is undoable and
   nothing is lost without a prompt. Two color modes:
@@ -1138,8 +1153,9 @@ storage without updating this section and the palette-swap design.
   caps k-means work so previews stay quick. Deterministic, opaque, sorted
   dark to light, fewer colors when the image has fewer.
 - `colorMatcher`: nearest color as `nearestColorIndex` would pick it (tests
-  check they agree), caching answers in a 16 MB table per palette. Reuse
-  one per palette.
+  check they agree), caching answers in a 16 MB table per palette.
+  `createPixelator` keeps the last one made, shared by every pixelator, so
+  the dialog and the command line reuse it across images with one palette.
 - Dithering: `ordered` nudges all three channels by the Bayer 8×8 threshold
   times `paletteSpread` (the average gap to each color's nearest neighbor,
   per channel) times the strength. `diffusion` is serpentine
@@ -1158,7 +1174,9 @@ storage without updating this section and the palette-swap design.
     top-left, cropped to the side, like Add as layer.
 - The dialog (`ui/pixelateDialog.ts`) decodes with `decodeImageWithin`:
   converted to sRGB as shown (unlike exact imports), and images over 16 MP
-  shrunk smoothly first. The preview recomputes through `adaptiveThrottle`
+  shrunk smoothly first. The original's preview is scaled by
+  `createImageBitmap` from the decoded pixels, not through a canvas the
+  image's full size. The preview recomputes through `adaptiveThrottle`
   and once more before applying, so a pending update is never skipped.
 - **Command line** (`src/cli/pixelate.ts`, `pnpm pixelate` or
   `node src/cli/pixelate.ts`): the same `createPixelator` over PNG files
@@ -1228,8 +1246,10 @@ storage without updating this section and the palette-swap design.
 - Opening a project replaces the document with a `document` edit
   (`replaceDocumentEdit`, undoable) and marks it saved. The reference is
   decoded first, and if the project has one it replaces the current
-  reference. Otherwise the current one stays, as when opening an image.
-  The reference isn't undoable, so undoing the open keeps it.
+  reference (cleared when the saved one can't be read, rather than leaving
+  an unrelated image over the new document). Otherwise the current one
+  stays, as when opening an image. The reference isn't undoable, so undoing
+  the open keeps it.
 - Saving downloads `<name>.pixgrind`. The File panel's "with reference"
   checkbox (shown only when a reference is loaded) controls embedding.
 - Dirty tracking: `Editor.dirty` is true when the history position differs

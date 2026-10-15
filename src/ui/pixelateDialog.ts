@@ -410,23 +410,31 @@ export function createPixelateDialog(editor: Editor, library: PaletteLibrary): P
     }
   };
 
-  const drawOriginal = (image: RgbaImage) => {
-    const full = el('canvas');
-    full.width = image.width;
-    full.height = image.height;
-    const fullCtx = full.getContext('2d');
-    const ctx = originalCanvas.getContext('2d');
-    if (!fullCtx || !ctx) return;
-    const data = fullCtx.createImageData(image.width, image.height);
-    data.data.set(image.data);
-    fullCtx.putImageData(data, 0, 0);
+  /** Shows the original, scaled down by the browser without a canvas its full size (a photo's would take tens of MB). */
+  const drawOriginal = async (image: RgbaImage) => {
     const scale = Math.min(1, PREVIEW_SIZE / Math.max(image.width, image.height));
-    originalCanvas.width = Math.max(1, Math.round(image.width * scale));
-    originalCanvas.height = Math.max(1, Math.round(image.height * scale));
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(full, 0, 0, originalCanvas.width, originalCanvas.height);
-    // Small images are likely pixel art: enlarge them crisply.
-    originalCanvas.classList.toggle('is-pixelated', Math.max(image.width, image.height) <= CRISP_PREVIEW_SIZE);
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+    // Decoded through a canvas, so the bytes are plain (see `decodeImageWithin`).
+    const data = image.data as Uint8ClampedArray<ArrayBuffer>;
+    const bitmap = await createImageBitmap(new ImageData(data, image.width, image.height), {
+      resizeWidth: width,
+      resizeHeight: height,
+      resizeQuality: 'high',
+    });
+    try {
+      // Another image may have replaced this one meanwhile.
+      if (source?.image !== image) return;
+      const ctx = originalCanvas.getContext('2d');
+      if (!ctx) return;
+      originalCanvas.width = width;
+      originalCanvas.height = height;
+      ctx.drawImage(bitmap, 0, 0);
+      // Small images are likely pixel art: enlarge them crisply.
+      originalCanvas.classList.toggle('is-pixelated', Math.max(image.width, image.height) <= CRISP_PREVIEW_SIZE);
+    } finally {
+      bitmap.close();
+    }
   };
 
   /* ---- Footer ---- */
@@ -528,7 +536,7 @@ export function createPixelateDialog(editor: Editor, library: PaletteLibrary): P
     fillPalettes();
     syncControls();
     syncSize();
-    drawOriginal(next.image);
+    void drawOriginal(next.image).catch(() => {});
     dialog.showModal();
     // After the dialog shows: resampling a large image takes a moment.
     setTimeout(schedule);

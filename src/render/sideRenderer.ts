@@ -2,7 +2,7 @@ import { extrusionEnd, extrusionOffset } from '../core/extrusion.ts';
 import { facingFrame, oppositeDirection, planeExtent, planeSize, type Axis, type Facing } from '../core/facing.ts';
 import type { Layer } from '../core/layer.ts';
 import { seenFrom, sliceOf, viewModel, type Slice, type VoxelModel } from '../core/model.ts';
-import { TRANSPARENT, type Palette } from '../core/palette.ts';
+import { clonePalette, palettesEqual, TRANSPARENT, type Palette } from '../core/palette.ts';
 import type { PixelDocument } from '../core/pixelDocument.ts';
 import { createChecker, get2dContext, indexImageData } from './canvasRenderer.ts';
 
@@ -166,14 +166,18 @@ export class SideRenderer {
     ctx.stroke();
   }
 
-  /** The whole model seen from the plane's right, two image pixels per cell (its halves). Rebuilt when the model changes. */
+  /**
+   * The whole model seen from the plane's right, two image pixels per cell
+   * (its halves). Rebuilt when the model or the palette's colors change
+   * (compared by content: color previews change the palette in place).
+   */
   private projectionCanvas(model: VoxelModel, facing: Facing, palette: Palette): HTMLCanvasElement {
     const cached = this.projection;
-    if (cached?.model === model && cached.facing === facing && cached.palette === palette) return cached.canvas;
+    if (cached?.model === model && cached.facing === facing && palettesEqual(cached.palette, palette)) return cached.canvas;
     const { right, down, toward } = facingFrame(facing);
     const canvas = cached?.canvas ?? document.createElement('canvas');
     putImage(canvas, indexImageData(viewModel(model, right, oppositeDirection(toward), down), palette));
-    this.projection = { model, facing, palette, canvas };
+    this.projection = { model, facing, palette: clonePalette(palette), canvas };
     return canvas;
   }
 
